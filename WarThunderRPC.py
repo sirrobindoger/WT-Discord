@@ -22,27 +22,6 @@ class WarThunderRPC:
         self.current_match_id = None  # To track match changes
         self.image_resolver = VehicleImageResolver()
 
-    def parse_country(self, tank_name):
-        """Parse country code from tank name with special cases"""
-        if not tank_name or tank_name == "Unknown":
-            return "US"
-            
-        parts = tank_name.split(" ")
-        if not parts:
-            return "US"
-            
-        country_code = parts[0].upper()
-        
-        # Special case mappings
-        country_mapping = {
-            "GERM": "DE",
-            "USSR": "RU",
-            "UK": "GB",
-            "SW": "SE"
-        }
-        
-        return country_mapping.get(country_code, country_code)
-        
     def fetch_hudmsg(self, last_evt=0, last_dmg=0):
         try:
             response = requests.get(f"{self.base_url}/hudmsg?lastEvt={last_evt}&lastDmg={last_dmg}")
@@ -137,7 +116,7 @@ class WarThunderRPC:
         map_info = self.get_json_data("map_info.json")
         raw_vehicle_type = indicators.get("type", "Unknown")
         vehicle_slug = self.image_resolver.extract_vehicle_slug(raw_vehicle_type)
-        vehicle_name = self.image_resolver.format_vehicle_name(vehicle_slug)
+        vehicle_name = self.image_resolver.get_display_name(vehicle_slug)
         
         # Calculate health status
         crew_current = str(indicators.get("crew_current") )
@@ -199,7 +178,7 @@ class WarThunderRPC:
         # Only add country flag for tanks, not planes
         is_tank = state["vehicle_type"] == "tank"
         if is_tank:
-            country_code = self.parse_country(state['vehicle_name'])
+            country_code = self.image_resolver.get_country_code(state["vehicle_slug"])
             base_presence.update({
                 "small_image": f"https://flagsapi.com/{country_code}/flat/64.png",
                 "small_text": country_code
