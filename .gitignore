@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+
+map.jpg
+
+service/__pycache__/
+service/build/
+service/dist/
+service/*.log
+
+.venv/
+venv/
+env/
+
+.idea/
+.vscode/
