@@ -220,7 +220,7 @@ class WarThunderRPC:
         if state["is_in_vehicle"] and state["in_map"] and state["in_match"]:
             action = "Piloting" if state["vehicle_type"] == "air" else "Driving"
             match_type = self.get_match_type(state["main_objective"], state["vehicle_type"])
-            status_text = f"{match_type} | {state['team_status']} | {state['kill_count']} Targets"
+            status_text = f"{match_type} | {state['kill_count']} Kills"
             
             return {**base_presence,
                 "state": f"{action} a {state['vehicle_name'].upper()}, {state['health_status']}",
