@@ -38,6 +38,13 @@ Naval vehicles show no data and will not work, it will show up as "Unknown vehic
 
 I'm working on this myself, as an amateur in Python, please feel free to contribute and reach out to me if you have any suggestions, feedback or ideas!
 
+## Discord Image Assets
+
+This project defaults to `https://unixcore.sh/wt1.webp` for the hangar logo. You can still override it before starting the app or service:
+
+- `WARTHUNDER_RPC_LARGE_IMAGE=https://.../wt-logo.png` to use a public image URL
+- `WARTHUNDER_RPC_LARGE_IMAGE_KEY=your-asset-key` to use a Discord uploaded asset key
+
 ## Issues
 
  - Air vehicles selected in the hangar does not update RPC, updates when a ground vehicle is selected.

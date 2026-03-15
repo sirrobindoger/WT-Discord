@@ -30,7 +30,10 @@ from kill_tracker import KillTracker, PlayerIdentity
 from user_config import read_username
 
 
-DEFAULT_LARGE_IMAGE_URL = "https://warthunder.com/assets/img/svg/logo-wt.svg"
+DEFAULT_LARGE_IMAGE = (
+    os.getenv("WARTHUNDER_RPC_LARGE_IMAGE", "https://unixcore.sh/wt1.webp")
+    or os.getenv("WARTHUNDER_RPC_LARGE_IMAGE_KEY", "wt-logo")
+).strip()
 
 
 log_dir = os.path.join(os.environ.get("PROGRAMDATA"), "WarThunderRPC")
@@ -357,9 +360,12 @@ class WarThunderRPCService(win32serviceutil.ServiceFramework):
     def build_presence_data(self, state):
         base_presence = {
             "start": self.clock_timer,
-            "large_image": DEFAULT_LARGE_IMAGE_URL,
             "large_text": "War Thunder"
         }
+        if DEFAULT_LARGE_IMAGE:
+            # Discord accepts either an uploaded asset key or an external image URL here.
+            base_presence["large_image"] = DEFAULT_LARGE_IMAGE
+        fallback_large_image = base_presence.get("large_image")
 
         if not state["in_map"]:
             return {**base_presence, "state": "In the hangar", "details": "Browsing vehicles.."}
@@ -383,7 +389,7 @@ class WarThunderRPCService(win32serviceutil.ServiceFramework):
                 return {**base_presence, 
                     "state": f"{action} a {state['vehicle_name'].upper()}", 
                     "details": f"In Test Drive | {state['health_status']}",
-                    "large_image": state["vehicle_image_url"] or base_presence["large_image"]}
+                    **({"large_image": state["vehicle_image_url"] or fallback_large_image} if state["vehicle_image_url"] or fallback_large_image else {})}
 
         if state["is_in_vehicle"] and state["in_map"] and state["in_match"]:
             action = "Piloting" if state["vehicle_type"] == "air" else "Driving"
@@ -393,7 +399,7 @@ class WarThunderRPCService(win32serviceutil.ServiceFramework):
             return {**base_presence,
                 "state": f"{action} a {state['vehicle_name'].upper()}, {state['health_status']}",
                 "details": status_text,
-                "large_image": state["vehicle_image_url"] or base_presence["large_image"],
+                **({"large_image": state["vehicle_image_url"] or fallback_large_image} if state["vehicle_image_url"] or fallback_large_image else {}),
                 "large_text": state["current_map"]
                 }
 
