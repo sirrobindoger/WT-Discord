@@ -18,6 +18,38 @@ class VehicleImageResolver:
     _GAME_ID_PATTERN = re.compile(r'"gameId"\s*:\s*"([^"]+)"')
     _IMAGE_PATTERN = re.compile(r'<img class="game-unit_template-image" src="([^"]+)"')
     _OG_IMAGE_PATTERN = re.compile(r'<meta name="og:image" content="([^"]+)"')
+    _TITLE_PATTERN = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+    _TITLE_SUFFIX_PATTERN = re.compile(r"\s*\|\s*War Thunder Wiki\s*$", re.IGNORECASE)
+    _COUNTRY_PREFIX_MAP = {
+        "us": "US",
+        "usa": "US",
+        "germ": "DE",
+        "ger": "DE",
+        "ussr": "RU",
+        "uk": "GB",
+        "sw": "SE",
+        "jp": "JP",
+        "cn": "CN",
+        "it": "IT",
+        "fr": "FR",
+        "il": "IL",
+    }
+    _TRAILING_FAMILY_NAMES = {
+        "abrams",
+        "sherman",
+        "patton",
+        "leclerc",
+        "merkava",
+        "challenger",
+        "centurion",
+        "crusader",
+        "churchill",
+        "comet",
+        "matilda",
+        "stuart",
+        "grant",
+        "lee",
+    }
 
     def __init__(
         self,
@@ -44,7 +76,52 @@ class VehicleImageResolver:
     def format_vehicle_name(vehicle_slug: Optional[str]) -> str:
         if not vehicle_slug:
             return "Unknown"
-        return vehicle_slug.replace("_", " ")
+        if vehicle_slug == "DUMMY_PLANE":
+            return "DUMMY PLANE"
+
+        tokens = [token for token in str(vehicle_slug).strip().split("_") if token]
+        if not tokens:
+            return "Unknown"
+
+        if tokens[0].lower() in VehicleImageResolver._COUNTRY_PREFIX_MAP:
+            tokens = tokens[1:]
+
+        while len(tokens) > 1 and tokens[-1].isalpha() and tokens[-1].lower() == tokens[0].lower():
+            tokens = tokens[:-1]
+
+        if len(tokens) > 1 and tokens[-1].lower() in VehicleImageResolver._TRAILING_FAMILY_NAMES:
+            tokens = tokens[:-1]
+
+        formatted_tokens = [VehicleImageResolver._format_name_token(token) for token in tokens]
+        return " ".join(formatted_tokens) or "Unknown"
+
+    @classmethod
+    def get_country_code(cls, vehicle_slug: Optional[str]) -> str:
+        if not vehicle_slug or vehicle_slug == "Unknown":
+            return "US"
+
+        prefix = str(vehicle_slug).strip().split("_")[0].lower()
+        return cls._COUNTRY_PREFIX_MAP.get(prefix, prefix.upper() or "US")
+
+    def get_display_name(self, vehicle_slug: Optional[str]) -> str:
+        if not vehicle_slug:
+            return "Unknown"
+
+        cached_entry = self._cache.get(vehicle_slug)
+        if cached_entry and cached_entry.get("display_name"):
+            return cached_entry["display_name"]
+
+        wiki_html = self._fetch_wiki_page(vehicle_slug)
+        display_name = self._extract_display_name(wiki_html) if wiki_html else None
+        if not display_name:
+            display_name = self.format_vehicle_name(vehicle_slug)
+
+        self._merge_cache_entry(vehicle_slug, display_name=display_name)
+        canonical_slug = self._extract_game_id(wiki_html) if wiki_html else None
+        if canonical_slug and canonical_slug != vehicle_slug:
+            self._merge_cache_entry(canonical_slug, display_name=display_name)
+
+        return display_name
 
     def resolve(self, vehicle_slug: Optional[str]) -> Tuple[Optional[str], str]:
         if not vehicle_slug or vehicle_slug == "Unknown":
@@ -52,25 +129,35 @@ class VehicleImageResolver:
 
         now = time.time()
         cached_entry = self._cache.get(vehicle_slug)
-        if cached_entry:
+        if cached_entry and "url" in cached_entry and "status" in cached_entry:
             if cached_entry["url"]:
                 return cached_entry["url"], cached_entry["status"]
-            if now < cached_entry["next_retry_at"]:
+            if now < cached_entry.get("next_retry_at", 0):
                 return None, cached_entry["status"]
 
         image_url, status, canonical_slug = self._resolve_live(vehicle_slug)
-        cache_entry = {
-            "url": image_url,
-            "status": status,
-            "canonical_slug": canonical_slug or vehicle_slug,
-            "next_retry_at": 0 if image_url else now + self.retry_cooldown,
-        }
-
-        self._cache[vehicle_slug] = cache_entry
+        self._merge_cache_entry(
+            vehicle_slug,
+            url=image_url,
+            status=status,
+            canonical_slug=canonical_slug or vehicle_slug,
+            next_retry_at=0 if image_url else now + self.retry_cooldown,
+        )
         if canonical_slug and canonical_slug != vehicle_slug:
-            self._cache[canonical_slug] = cache_entry
+            self._merge_cache_entry(
+                canonical_slug,
+                url=image_url,
+                status=status,
+                canonical_slug=canonical_slug,
+                next_retry_at=0 if image_url else now + self.retry_cooldown,
+            )
 
         return image_url, status
+
+    def _merge_cache_entry(self, vehicle_slug: str, **values) -> None:
+        cache_entry = dict(self._cache.get(vehicle_slug, {}))
+        cache_entry.update(values)
+        self._cache[vehicle_slug] = cache_entry
 
     def _resolve_live(self, vehicle_slug: str) -> Tuple[Optional[str], str, Optional[str]]:
         direct_image_url = self.CDN_IMAGE_URL.format(slug=vehicle_slug)
@@ -117,6 +204,31 @@ class VehicleImageResolver:
     def _extract_game_id(self, wiki_html: str) -> Optional[str]:
         match = self._GAME_ID_PATTERN.search(wiki_html)
         return match.group(1) if match else None
+
+    def _extract_display_name(self, wiki_html: Optional[str]) -> Optional[str]:
+        if not wiki_html:
+            return None
+
+        match = self._TITLE_PATTERN.search(wiki_html)
+        if not match:
+            return None
+
+        title = html.unescape(match.group(1)).replace("\xa0", " ").strip()
+        title = self._TITLE_SUFFIX_PATTERN.sub("", title).strip()
+        return title or None
+
+    @staticmethod
+    def _format_name_token(token: str) -> str:
+        if not token:
+            return token
+
+        if re.search(r"\d", token):
+            return token.upper()
+
+        if len(token) <= 3:
+            return token.upper()
+
+        return token.capitalize()
 
     def _extract_image_url(self, wiki_html: str, vehicle_slug: str) -> Optional[str]:
         for pattern in (self._IMAGE_PATTERN, self._OG_IMAGE_PATTERN):
