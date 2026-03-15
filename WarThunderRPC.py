@@ -5,11 +5,10 @@ import time
 from PIL import Image
 from pypresence import Presence
 import telemetry
-import tkinter as tk
-from tkinter import simpledialog
-import winreg
 import re
 from vehicle_images import VehicleImageResolver
+from kill_tracker import KillTracker, PlayerIdentity
+from user_config import get_or_prompt_username
 
 class WarThunderRPC:
     def __init__(self):
@@ -18,32 +17,10 @@ class WarThunderRPC:
         self.rpc.connect()
         self.clock_timer = int(time.time())
         self.base_url = "http://127.0.0.1:8111"
-        self.player_name = self.get_warthunder_username()
-        self.kill_count = 0
-        self.last_evt, self.last_dmg = self.initialize_hudmsg_ids()
+        self.player_name = get_or_prompt_username(prompt_if_missing=True)
+        self.kill_tracker = KillTracker(PlayerIdentity(self.player_name))
         self.current_match_id = None  # To track match changes
         self.image_resolver = VehicleImageResolver()
-
-    def get_warthunder_username(self):
-        try:
-            registry_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\WarThunderRPC", 0, winreg.KEY_READ)
-            player_name, _ = winreg.QueryValueEx(registry_key, "Username")
-            winreg.CloseKey(registry_key)
-            if player_name:
-                return player_name
-        except FileNotFoundError:
-            pass
-        return self.prompt_get_warthunder_username()
-
-    def prompt_get_warthunder_username(self):
-        root = tk.Tk()
-        root.withdraw()  # Hide the root window
-        player_name = simpledialog.askstring("War Thunder Username", "What is your War Thunder username?")
-        if player_name:
-            registry_key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\WarThunderRPC")
-            winreg.SetValueEx(registry_key, "Username", 0, winreg.REG_SZ, player_name)
-            winreg.CloseKey(registry_key)
-        return player_name
 
     def parse_country(self, tank_name):
         """Parse country code from tank name with special cases"""
@@ -66,14 +43,6 @@ class WarThunderRPC:
         
         return country_mapping.get(country_code, country_code)
         
-    def initialize_hudmsg_ids(self):
-        data, _ = self.fetch_hudmsg(0, 0)
-        if data:
-            last_dmg = data[-1]['id']
-        else:
-            last_dmg = 0
-        return 0, last_dmg
-
     def fetch_hudmsg(self, last_evt=0, last_dmg=0):
         try:
             response = requests.get(f"{self.base_url}/hudmsg?lastEvt={last_evt}&lastDmg={last_dmg}")
@@ -146,14 +115,21 @@ class WarThunderRPC:
                 exit()
             return None
 
-    def update_kill_count(self):
-        damage_msgs, _ = self.fetch_hudmsg(self.last_evt, self.last_dmg)
-        if damage_msgs:
-            self.last_dmg = damage_msgs[-1]['id']
-            for dmg in damage_msgs:
-                msg = dmg.get('msg', '').lower()
-                if self.player_name.lower() in msg and "destroyed" in msg and not ("destroyed " + self.player_name.lower()) in msg:
-                    self.kill_count += 1
+    def get_latest_damage_id(self):
+        damage_msgs, _ = self.fetch_hudmsg(0, 0)
+        return self.kill_tracker.latest_damage_id(damage_msgs)
+
+    def update_kill_count(self, in_match_session):
+        if not in_match_session:
+            self.kill_tracker.reset_session()
+            return
+
+        if not self.kill_tracker.session_active:
+            self.kill_tracker.start_session(seed_damage_id=self.get_latest_damage_id())
+            return
+
+        damage_msgs, _ = self.fetch_hudmsg(0, self.kill_tracker.last_damage_id)
+        self.kill_tracker.ingest_damage_messages(damage_msgs)
 
     def get_game_state(self):
         indicators = self.get_json_data("indicators")
@@ -162,10 +138,6 @@ class WarThunderRPC:
         raw_vehicle_type = indicators.get("type", "Unknown")
         vehicle_slug = self.image_resolver.extract_vehicle_slug(raw_vehicle_type)
         vehicle_name = self.image_resolver.format_vehicle_name(vehicle_slug)
-        
-        
-        # Update kill count
-        self.update_kill_count()
         
         # Calculate health status
         crew_current = str(indicators.get("crew_current") )
@@ -184,7 +156,7 @@ class WarThunderRPC:
             "main_objective": "false",
             "in_map": map_info.get("valid", False),
             "current_map": "Unknown",
-            "kill_count": self.kill_count,
+            "kill_count": self.kill_tracker.kill_count,
             "team_status": "Unknown",
             "health_status": health_status
         }
@@ -196,6 +168,9 @@ class WarThunderRPC:
             print(cleaned_objective)
             state["main_objective"] = cleaned_objective
             state["in_match"] = mission["objectives"][0].get("primary", False)
+
+        self.update_kill_count(state["in_map"] and state["in_match"])
+        state["kill_count"] = self.kill_tracker.kill_count
         
         if state["in_map"] and state["in_match"]:
             state["team_status"] = self.get_map_obj_info()
@@ -219,9 +194,6 @@ class WarThunderRPC:
         }
 
         if not state["in_map"]:
-            # reset kill count if it's > 0
-            if self.kill_count > 0:
-                self.kill_count = 0
             return {**base_presence, "state": "In the hangar", "details": "Browsing vehicles.."}
 
         # Only add country flag for tanks, not planes

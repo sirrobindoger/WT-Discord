@@ -1,7 +1,6 @@
 # installer.py
 import os
 import sys
-import winreg
 import tkinter as tk
 from tkinter import simpledialog, messagebox
 import shutil
@@ -13,6 +12,12 @@ import servicemanager
 import socket
 import ctypes
 import time
+
+PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+
+from user_config import read_username, write_username
 
 VERSION = "1.0.0"
 
@@ -74,9 +79,7 @@ class UsernameDialog:
         username = self.entry.get().strip()
         if username:
             try:
-                registry_key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, r"Software\WarThunderRPC")
-                winreg.SetValueEx(registry_key, "Username", 0, winreg.REG_SZ, username)
-                winreg.CloseKey(registry_key)
+                write_username(username)
                 self.username = username
                 self.dialog.destroy()
             except Exception as e:
@@ -86,13 +89,7 @@ class UsernameDialog:
 
 def get_username():
     """Get username from registry"""
-    try:
-        registry_key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"Software\WarThunderRPC", 0, winreg.KEY_READ)
-        username, _ = winreg.QueryValueEx(registry_key, "Username")
-        winreg.CloseKey(registry_key)
-        return username
-    except:
-        return None
+    return read_username()
 
 def change_username(root):
     dialog = UsernameDialog(root)
