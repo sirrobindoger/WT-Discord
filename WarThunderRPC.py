@@ -11,6 +11,10 @@ import winreg
 import re
 from vehicle_images import VehicleImageResolver
 
+
+DEFAULT_LARGE_IMAGE_URL = "https://warthunder.com/assets/img/svg/logo-wt.svg"
+
+
 class WarThunderRPC:
     def __init__(self):
         self.client_id = "1211769535468937237"
@@ -214,7 +218,7 @@ class WarThunderRPC:
     def build_presence_data(self, state):
         base_presence = {
             "start": self.clock_timer,
-            "large_image": "logo",
+            "large_image": DEFAULT_LARGE_IMAGE_URL,
             "large_text": "War Thunder"
         }
 

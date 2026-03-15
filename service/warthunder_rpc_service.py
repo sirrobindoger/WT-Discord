@@ -29,6 +29,9 @@ if PARENT_DIR not in sys.path:
 from vehicle_images import VehicleImageResolver
 
 
+DEFAULT_LARGE_IMAGE_URL = "https://warthunder.com/assets/img/svg/logo-wt.svg"
+
+
 log_dir = os.path.join(os.environ.get("PROGRAMDATA"), "WarThunderRPC")
 if not os.path.exists(log_dir):
     os.makedirs(log_dir)
@@ -397,7 +400,7 @@ class WarThunderRPCService(win32serviceutil.ServiceFramework):
     def build_presence_data(self, state):
         base_presence = {
             "start": self.clock_timer,
-            "large_image": "logo",
+            "large_image": DEFAULT_LARGE_IMAGE_URL,
             "large_text": "War Thunder"
         }
 
