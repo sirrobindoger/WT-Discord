@@ -19,8 +19,7 @@ Download the latest `WarThunderRPC_Setup.exe` from GitHub Releases to install it
 
 Example RPC status:
 
-> Driving a M1A1 HC, 3/4 Crew  
-> Ground Battle, 2 Kills
+![Example Discord Rich Presence](example.png)
 
 ## Setup
 
