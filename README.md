@@ -1,63 +1,53 @@
-# WarThunder Discord Rich Presence (RPC)
+# WarThunderRPC
 
-## About
+War Thunder Discord Rich Presence for Windows. The app reads War Thunder's local telemetry on `127.0.0.1:8111` and updates Discord with your current vehicle, map, and match state.
 
-![image](https://github.com/ValerieOSD/WarThunderRPC/assets/144137904/2ff2533c-d962-42cf-a2f9-0d113e9029b5)
+## Requirements
 
-![image](https://github.com/ValerieOSD/WarThunderRPC/assets/144137904/26584cb8-37d0-4af3-b664-1c41f948fac1)
+- Windows
+- Python 3.11+
 
+## Features
 
-**This is a external application which adds War Thunder as a Discord Rich Presence application. \[1].**
+- Detects whether you are in the hangar, a test drive, or a live match
+- Shows the current vehicle and resolves a cleaner display name for many vehicles
+- Identifies the current map from War Thunder's local map telemetry
+- Tracks simple live match context such as match type and kill count
+- Supports both local testing and a packaged Windows `.exe` workflow
 
-\[1] This application **pulls in-game information from War Thunder through Port 8111**.
-War Thunder outputs some in-game data to 127.0.0.1:8111 and it's subfolders automatically on all machines. There really isn't much to go off and it's pretty awfully structured, but it makes do for now.
-This application modifies in no way whatsoever any data from the game, it is completely safe and will not get you banned.
+Example RPC status:
 
-### Requirements (The runtime comes pre-embedded into the .EXE, you do *not* need to download this. It's only for debugging.)
+> Driving a M1A1 HC, 3/4 Crew  
+> Ground Battle | 2 Kills
 
- - [Python 3.11+](https://www.microsoft.com/store/productId/9NRWMJP3717K?ocid=pdpshare)
+## Setup
 
-### Features
+Use the repo-local virtual environment for everything:
 
-  - Shows if you are in the hangar, in a match, or in a test drive.
-  - Shows what map you are in.
-  - Detects what vehicle you are using.
-  - Displays simple match statistics (Air or Ground, Domination or Conquest, etc).
+### Windows PowerShell
 
-Unfortunately some modes or vehicles aren't supported due to how the data is structured from the game itself,
-Naval vehicles show no data and will not work, it will show up as "Unknown vehicle".
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
+### macOS / Linux
 
-## Workflows
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
-### Run Locally for Testing
+## Build the EXE
 
-1. Install dependencies with `python -m pip install -r requirements.txt`
-2. Start the local tester with `python WarThunderRPC.py`
+### Windows
 
-This path uses the shared `warthunder_rpc` package directly, so local testing and the packaged app now execute the same core logic.
+```powershell
+.venv\Scripts\python.exe build.py
+```
 
-### Build the `.exe`
-
-1. Install dependencies with `python -m pip install -r requirements.txt`
-2. Build the Windows executable with `python build.py`
-
-The generated executable keeps the installer GUI and Windows service flow as its default launch behavior.
-
-## Development
-
-The shared source of truth now lives in `warthunder_rpc/`. The only supported entrypoints are the root local runner and the root build / installer path.
-
-## Discord Image Assets
-
-This project defaults to `https://unixcore.sh/wt1.webp` for the hangar logo. You can still override it before starting the app or service:
-
-- `WARTHUNDER_RPC_LARGE_IMAGE=https://.../wt-logo.png` to use a public image URL
-- `WARTHUNDER_RPC_LARGE_IMAGE_KEY=your-asset-key` to use a Discord uploaded asset key
-
-## Issues
-
- - Air vehicles selected in the hangar does not update RPC, updates when a ground vehicle is selected.
- - ~~RPC is shown as 'Test Drive' at the start of matches, this is due to the game logic's objective flag not being set until the start of the match.~~
- - ~~Current vehicle is shown as "DUMMY_PLANE" at the start of matches, this is the default camera view name.~~
- - ~~Air "Operation" Mode is broken, and will show up as a 'Test Drive', this is due to the game's logic not outputting correct information.~~ FIXED - Might still take some time to detect, but it should eventually.
+This produces `dist\WarThunderRPC_Setup.exe`.
