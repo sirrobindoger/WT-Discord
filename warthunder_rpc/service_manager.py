@@ -4,6 +4,7 @@ import ctypes
 import os
 import subprocess
 import time
+from dataclasses import asdict
 from dataclasses import dataclass
 from typing import Callable
 
@@ -35,6 +36,16 @@ class InstallSummary:
     service_user: str
     service_name: str = SERVICE_NAME
     task_name: str = WORKER_TASK_NAME
+    service_created: bool = False
+    service_running: bool = False
+    task_created: bool = False
+    task_exists: bool = False
+    warnings: list[str] | None = None
+
+    def to_dict(self):
+        data = asdict(self)
+        data["warnings"] = list(self.warnings or [])
+        return data
 
 
 def is_admin():
@@ -50,7 +61,8 @@ def _run_command(
     check=True,
     runner: CommandRunner = subprocess.run,
 ):
-    completed = runner(command, capture_output=True, text=True, check=False)
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    completed = runner(command, capture_output=True, text=True, check=False, creationflags=creationflags)
     if check and completed.returncode != 0:
         raise ServiceManagerError(_format_command_error(command, completed))
     return completed
@@ -62,6 +74,10 @@ def _format_command_error(command, completed):
     details = stderr or stdout or f"exit code {completed.returncode}"
     rendered = " ".join(command)
     return f"{rendered} failed: {details}"
+
+
+def _command_output(completed):
+    return f"{completed.stdout}\n{completed.stderr}".lower()
 
 
 def _service_query_state(output):
@@ -92,7 +108,7 @@ def query_service_state(service_name=SERVICE_NAME, *, runner: CommandRunner = su
     completed = _run_command(["sc", "query", service_name], check=False, runner=runner)
     if completed.returncode != 0:
         missing_tokens = ("does not exist", "1060")
-        combined = f"{completed.stdout}\n{completed.stderr}".lower()
+        combined = _command_output(completed)
         if any(token in combined for token in missing_tokens):
             return None
         raise ServiceManagerError(_format_command_error(["sc", "query", service_name], completed))
@@ -102,7 +118,7 @@ def query_service_state(service_name=SERVICE_NAME, *, runner: CommandRunner = su
 def query_service_start_type(service_name=SERVICE_NAME, *, runner: CommandRunner = subprocess.run):
     completed = _run_command(["sc", "qc", service_name], check=False, runner=runner)
     if completed.returncode != 0:
-        combined = f"{completed.stdout}\n{completed.stderr}".lower()
+        combined = _command_output(completed)
         if "does not exist" in combined or "1060" in combined:
             return None
         raise ServiceManagerError(_format_command_error(["sc", "qc", service_name], completed))
@@ -118,7 +134,7 @@ def query_task_exists(task_name=WORKER_TASK_NAME, *, runner: CommandRunner = sub
     if completed.returncode == 0:
         return True
 
-    combined = f"{completed.stdout}\n{completed.stderr}".lower()
+    combined = _command_output(completed)
     if "cannot find the file" in combined or "cannot find the task" in combined:
         return False
     raise ServiceManagerError(_format_command_error(["schtasks", "/query", "/tn", task_name], completed))
@@ -131,6 +147,7 @@ def get_service_status(*, runner: CommandRunner = subprocess.run):
         "service_installed": state is not None,
         "service_state": state or "NOT_INSTALLED",
         "service_start_type": start_type or "UNKNOWN",
+        "service_running": state == "RUNNING",
         "task_exists": query_task_exists(runner=runner),
     }
 
@@ -149,9 +166,16 @@ def stop_service(service_name=SERVICE_NAME, *, runner: CommandRunner = subproces
     if state is None or state == "STOPPED":
         return
 
-    _run_command(["sc", "stop", service_name], check=False, runner=runner)
+    completed = _run_command(["sc", "stop", service_name], check=False, runner=runner)
+    combined = _command_output(completed)
+    if completed.returncode != 0 and "service has not been started" not in combined:
+        current_state = query_service_state(service_name, runner=runner)
+        if current_state not in (None, "STOPPED", "STOP_PENDING"):
+            raise ServiceManagerError(_format_command_error(["sc", "stop", service_name], completed))
+
     stopped = wait_for_condition(
         lambda: query_service_state(service_name, runner=runner) in (None, "STOPPED"),
+        timeout_seconds=60,
         sleep=sleep,
     )
     if not stopped:
@@ -176,9 +200,16 @@ def delete_service(service_name=SERVICE_NAME, *, runner: CommandRunner = subproc
     if state is None:
         return
 
-    _run_command(["sc", "delete", service_name], check=False, runner=runner)
+    completed = _run_command(["sc", "delete", service_name], check=False, runner=runner)
+    combined = _command_output(completed)
+    if completed.returncode != 0 and "marked for deletion" not in combined:
+        current_state = query_service_state(service_name, runner=runner)
+        if current_state is not None:
+            raise ServiceManagerError(_format_command_error(["sc", "delete", service_name], completed))
+
     deleted = wait_for_condition(
         lambda: query_service_state(service_name, runner=runner) is None,
+        timeout_seconds=90,
         sleep=sleep,
     )
     if not deleted:
@@ -269,9 +300,16 @@ def create_service(runtime_path, *, service_name=SERVICE_NAME, runner: CommandRu
 
 
 def start_service(service_name=SERVICE_NAME, *, runner: CommandRunner = subprocess.run, sleep=time.sleep):
-    _run_command(["sc", "start", service_name], runner=runner)
+    completed = _run_command(["sc", "start", service_name], check=False, runner=runner)
+    combined = _command_output(completed)
+    if completed.returncode != 0 and "already running" not in combined:
+        current_state = query_service_state(service_name, runner=runner)
+        if current_state not in ("RUNNING", "START_PENDING"):
+            raise ServiceManagerError(_format_command_error(["sc", "start", service_name], completed))
+
     running = wait_for_condition(
         lambda: query_service_state(service_name, runner=runner) == "RUNNING",
+        timeout_seconds=60,
         sleep=sleep,
     )
     if not running:
@@ -395,14 +433,63 @@ def install_runtime_service(
     if not os.path.exists(runtime_path):
         raise ServiceManagerError(f"Runtime executable not found: {runtime_path}")
 
-    terminate_runtime_processes()
-    stop_and_delete_service(runner=runner, sleep=sleep)
-    delete_task(runner=runner, sleep=sleep)
-    create_worker_task(runtime_path, service_user, runner=runner)
-    create_service(runtime_path, runner=runner)
-    start_service(runner=runner, sleep=sleep)
-    start_worker_task(runner=runner)
-    return InstallSummary(runtime_path=runtime_path, service_user=service_user)
+    warnings = []
+
+    terminated_pids = terminate_runtime_processes()
+    if terminated_pids:
+        warnings.append(f"Terminated stray runtime processes: {', '.join(str(pid) for pid in terminated_pids)}")
+
+    try:
+        stop_and_delete_service(runner=runner, sleep=sleep)
+    except ServiceManagerError as exc:
+        warnings.append(str(exc))
+
+    try:
+        delete_task(runner=runner, sleep=sleep)
+    except ServiceManagerError as exc:
+        warnings.append(str(exc))
+
+    task_created = False
+    try:
+        create_worker_task(runtime_path, service_user, runner=runner)
+        task_created = True
+    except ServiceManagerError as exc:
+        warnings.append(str(exc))
+
+    service_created = False
+    try:
+        create_service(runtime_path, runner=runner)
+        service_created = True
+    except ServiceManagerError as exc:
+        warnings.append(str(exc))
+
+    try:
+        start_service(runner=runner, sleep=sleep)
+    except ServiceManagerError as exc:
+        warnings.append(str(exc))
+
+    status = get_service_status(runner=runner)
+    service_running = bool(status["service_running"])
+    task_exists = bool(status["task_exists"])
+
+    if not service_running or not task_exists:
+        details = (
+            f"Failed to verify final install state: "
+            f"service_state={status['service_state']}, task_exists={task_exists}."
+        )
+        if warnings:
+            details = f"{details} Warnings: {' | '.join(warnings)}"
+        raise ServiceManagerError(details)
+
+    return InstallSummary(
+        runtime_path=runtime_path,
+        service_user=service_user,
+        service_created=service_created,
+        service_running=service_running,
+        task_created=task_created,
+        task_exists=task_exists,
+        warnings=warnings,
+    )
 
 
 def uninstall_runtime_service(

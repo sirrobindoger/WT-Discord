@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
 import servicemanager
 
-from .controller import main as controller_main
-from .local import main as local_main
 from .service_manager import (
     ServiceManagerError,
+    controller_autostart_enabled,
     disable_service,
     enable_service,
     get_current_user,
+    get_service_status,
     install_runtime_service,
     resolve_runtime_path,
     set_controller_autostart,
@@ -23,7 +24,6 @@ from .service_manager import (
 )
 from .user_config import read_username, write_username
 from .windows_service import WarThunderRPCService
-from .worker import main as worker_main
 
 
 def build_parser():
@@ -36,6 +36,7 @@ def build_parser():
     parser.add_argument("--uninstall-service", action="store_true", help="Remove the Windows service and worker task")
     parser.add_argument("--set-username", metavar="USERNAME", help="Store the War Thunder username for kill tracking")
     parser.add_argument("--get-username", action="store_true", help="Print the stored War Thunder username")
+    parser.add_argument("--status-json", action="store_true", help="Print machine-readable runtime/service status")
     parser.add_argument("--runtime-path", metavar="PATH", help="Override the runtime executable path for installer actions")
     parser.add_argument("--service-user", metavar="USERNAME", help="Override the Windows user used for the worker task")
     parser.add_argument(
@@ -65,6 +66,18 @@ def _resolve_self_runtime_path(provided_path):
     return resolve_runtime_path(os.path.join(os.getcwd(), "dist", "WarThunderRPC.exe"))
 
 
+def _emit_json(payload, *, exit_code=0):
+    print(json.dumps(payload, sort_keys=True))
+    raise SystemExit(exit_code)
+
+
+def _build_status_payload():
+    payload = get_service_status()
+    payload["controller_autostart_enabled"] = controller_autostart_enabled()
+    payload["username"] = read_username() or ""
+    return payload
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -75,24 +88,49 @@ def main(argv=None):
             return
 
         if args.worker:
+            from .worker import main as worker_main
+
             worker_main()
             return
 
         if args.controller:
+            from .controller import main as controller_main
+
             controller_main()
             return
 
         if args.install_service:
             username = read_username()
             if not username:
-                raise ServiceManagerError(
-                    "No War Thunder username is configured yet. Set it first so kill tracking can identify your account."
+                _emit_json(
+                    {
+                        "success": False,
+                        "error": "No War Thunder username is configured yet. Set it first so kill tracking can identify your account.",
+                    },
+                    exit_code=1,
                 )
+
             runtime_path = _resolve_self_runtime_path(args.runtime_path)
             service_user = args.service_user or get_current_user()
-            summary = install_runtime_service(runtime_path, service_user)
-            print(f"Installed {summary.service_name} using {summary.runtime_path} for {summary.service_user}")
-            return
+            try:
+                summary = install_runtime_service(runtime_path, service_user)
+            except ServiceManagerError as exc:
+                _emit_json(
+                    {
+                        "success": False,
+                        "error": str(exc),
+                        "status": _build_status_payload(),
+                    },
+                    exit_code=1,
+                )
+
+            _emit_json(
+                {
+                    "success": True,
+                    "result": summary.to_dict(),
+                    "status": _build_status_payload(),
+                }
+            )
 
         if args.uninstall_service:
             uninstall_runtime_service()
@@ -125,6 +163,9 @@ def main(argv=None):
             print(username)
             return
 
+        if args.status_json:
+            _emit_json(_build_status_payload())
+
         if args.enable_controller_autostart:
             runtime_path = _resolve_self_runtime_path(args.runtime_path)
             set_controller_autostart(True, command=f'"{runtime_path}" --controller')
@@ -142,8 +183,12 @@ def main(argv=None):
             return
 
         if args.local:
+            from .local import main as local_main
+
             local_main()
             return
+
+        from .controller import main as controller_main
 
         controller_main()
         return

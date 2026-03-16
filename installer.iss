@@ -46,6 +46,7 @@ var
   SummaryPage: TWizardPage;
   SummaryLabel: TNewStaticText;
   InstallStatusText: String;
+  InstallWarnings: String;
 
 function QuoteForParam(const Value: String): String;
 begin
@@ -57,9 +58,116 @@ begin
   Result := BaseDir + '\{#MyAppExeName}';
 end;
 
-function RunRuntime(const WorkDir, Params: String; var ResultCode: Integer): Boolean;
+function InstallerLogDir(): String;
 begin
-  Result := Exec(RuntimeExePath(WorkDir), Params, WorkDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := ExpandConstant('{commonappdata}\WarThunderRPC');
+end;
+
+function InstallerLogPath(): String;
+begin
+  Result := InstallerLogDir() + '\installer.log';
+end;
+
+procedure AppendInstallerLog(const Message: String);
+begin
+  ForceDirectories(InstallerLogDir());
+  SaveStringToFile(
+    InstallerLogPath(),
+    GetDateTimeString('yyyy-mm-dd hh:nn:ss', #0, #0) + ' ' + Message + #13#10,
+    True
+  );
+end;
+
+procedure AddInstallWarning(const Message: String);
+begin
+  if InstallWarnings <> '' then
+    InstallWarnings := InstallWarnings + #13#10;
+  InstallWarnings := InstallWarnings + '- ' + Message;
+  AppendInstallerLog('WARNING: ' + Message);
+end;
+
+function ReadOutputFile(const FileName: String): String;
+var
+  FileContents: AnsiString;
+begin
+  Result := '';
+  if FileExists(FileName) then
+  begin
+    if LoadStringFromFile(FileName, FileContents) then
+      Result := FileContents;
+    DeleteFile(FileName);
+  end;
+end;
+
+function RunRuntimeCapture(const WorkDir, Params: String; var ResultCode: Integer; var OutputText: String): Boolean;
+var
+  TempFile: String;
+  Command: String;
+begin
+  TempFile := ExpandConstant('{tmp}\WarThunderRPC_runtime_output.txt');
+  if FileExists(TempFile) then
+    DeleteFile(TempFile);
+
+  AppendInstallerLog('RUN ' + RuntimeExePath(WorkDir) + ' ' + Params);
+  Command := '/C ""' + RuntimeExePath(WorkDir) + '" ' + Params + ' > "' + TempFile + '" 2>&1"';
+  Result := Exec(ExpandConstant('{cmd}'), Command, WorkDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  OutputText := ReadOutputFile(TempFile);
+  AppendInstallerLog('EXIT ' + IntToStr(ResultCode));
+  if Trim(OutputText) <> '' then
+    AppendInstallerLog('OUTPUT ' + OutputText);
+end;
+
+function RunShellCapture(const Command: String; var ResultCode: Integer; var OutputText: String): Boolean;
+var
+  TempFile: String;
+begin
+  TempFile := ExpandConstant('{tmp}\WarThunderRPC_shell_output.txt');
+  if FileExists(TempFile) then
+    DeleteFile(TempFile);
+
+  AppendInstallerLog('SHELL ' + Command);
+  Result := Exec(
+    ExpandConstant('{cmd}'),
+    '/C ' + Command + ' > "' + TempFile + '" 2>&1',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+  OutputText := ReadOutputFile(TempFile);
+  AppendInstallerLog('EXIT ' + IntToStr(ResultCode));
+  if Trim(OutputText) <> '' then
+    AppendInstallerLog('OUTPUT ' + OutputText);
+end;
+
+function StatusLooksHealthy(const OutputText: String): Boolean;
+begin
+  Result :=
+    (Pos('"service_installed": true', OutputText) > 0) and
+    (Pos('"service_running": true', OutputText) > 0) and
+    (Pos('"task_exists": true', OutputText) > 0);
+end;
+
+procedure CleanupExistingInstall;
+var
+  ResultCode: Integer;
+  OutputText: String;
+begin
+  AppendInstallerLog('Starting cleanup of previous install state');
+
+  if FileExists(RuntimeExePath(ExpandConstant('{app}'))) then
+  begin
+    RunRuntimeCapture(ExpandConstant('{app}'), '--cleanup-runtime-processes', ResultCode, OutputText);
+    RunRuntimeCapture(ExpandConstant('{app}'), '--disable-controller-autostart', ResultCode, OutputText);
+    RunRuntimeCapture(ExpandConstant('{app}'), '--uninstall-service', ResultCode, OutputText);
+  end;
+
+  RunShellCapture('taskkill /F /T /IM WarThunderRPC.exe', ResultCode, OutputText);
+  RunShellCapture('sc stop WarThunderRPC', ResultCode, OutputText);
+  RunShellCapture('sc delete WarThunderRPC', ResultCode, OutputText);
+  RunShellCapture('schtasks /delete /f /tn WarThunderRPCWorker', ResultCode, OutputText);
+  Sleep(2000);
+  AppendInstallerLog('Finished cleanup of previous install state');
 end;
 
 function EnsureUsernameConfigured(): Boolean;
@@ -133,25 +241,18 @@ begin
   SummaryLabel.Left := 0;
   SummaryLabel.Top := 0;
   SummaryLabel.Width := SummaryPage.SurfaceWidth;
-  SummaryLabel.Height := ScaleY(120);
+  SummaryLabel.Height := ScaleY(180);
   SummaryLabel.WordWrap := True;
   SummaryLabel.Caption := 'War Thunder RPC is ready to install.';
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var
-  ResultCode: Integer;
 begin
   Result := '';
   InstallStatusText := '';
-
-  if FileExists(RuntimeExePath(ExpandConstant('{app}'))) then
-  begin
-    if not RunRuntime(ExpandConstant('{app}'), '--uninstall-service', ResultCode) then
-      Result := 'Unable to prepare the previous installation for update.'
-    else if ResultCode <> 0 then
-      Result := 'Unable to stop and remove the previous service before updating.';
-  end;
+  InstallWarnings := '';
+  AppendInstallerLog('--- Starting install session ---');
+  CleanupExistingInstall;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -159,31 +260,48 @@ var
   ResultCode: Integer;
   UsernameParam: String;
   InstallParam: String;
+  OutputText: String;
+  StatusOutput: String;
 begin
   if CurStep <> ssPostInstall then
     exit;
 
   UsernameParam := '--set-username ' + QuoteForParam(Trim(UsernamePage.Values[0]));
-  if not RunRuntime(ExpandConstant('{app}'), UsernameParam, ResultCode) or (ResultCode <> 0) then
-    RaiseException('The installer could not save the War Thunder username for kill tracking.');
+  if not RunRuntimeCapture(ExpandConstant('{app}'), UsernameParam, ResultCode, OutputText) or (ResultCode <> 0) then
+    RaiseException('The installer could not save the War Thunder username for kill tracking. See ' + InstallerLogPath());
 
-  if not RunRuntime(ExpandConstant('{app}'), '--enable-controller-autostart', ResultCode) or (ResultCode <> 0) then
-    RaiseException('The installer could not enable controller auto-start.');
+  if not RunRuntimeCapture(ExpandConstant('{app}'), '--enable-controller-autostart', ResultCode, OutputText) or (ResultCode <> 0) then
+    AddInstallWarning('The controller could not be configured to start automatically. You can still launch it from the Start menu.');
 
   InstallParam :=
     '--install-service --runtime-path ' + QuoteForParam(RuntimeExePath(ExpandConstant('{app}')));
-  if not RunRuntime(ExpandConstant('{app}'), InstallParam, ResultCode) or (ResultCode <> 0) then
-    RaiseException('The installer could not install or start the Windows service.');
+  if not RunRuntimeCapture(ExpandConstant('{app}'), InstallParam, ResultCode, OutputText) then
+    AddInstallWarning('The install helper did not report success. Verifying final state now.')
+  else if ResultCode <> 0 then
+    AddInstallWarning('The install helper reported a recoverable issue. Verifying final state now.');
 
-  Exec(RuntimeExePath(ExpandConstant('{app}')), '--controller', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, ResultCode);
+  if not RunRuntimeCapture(ExpandConstant('{app}'), '--status-json', ResultCode, StatusOutput) then
+    RaiseException('The installer could not verify the final service status. See ' + InstallerLogPath());
+
+  if (ResultCode <> 0) or not StatusLooksHealthy(StatusOutput) then
+  begin
+    AppendInstallerLog('Final status verification failed: ' + StatusOutput);
+    RaiseException('The installer could not verify a working service. See ' + InstallerLogPath());
+  end;
+
+  if not Exec(RuntimeExePath(ExpandConstant('{app}')), '--controller', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, ResultCode) then
+    AddInstallWarning('The control center could not be launched automatically. You can still open it from the Start menu.');
 
   InstallStatusText :=
     'Install location: ' + ExpandConstant('{app}') + #13#10 +
     'Tracked username: ' + Trim(UsernamePage.Values[0]) + #13#10 +
-    'Service: installed and started' + #13#10 +
-    'Worker task: created and launched' + #13#10 +
-    'Controller: launched now and set to start at login' + #13#10#13#10 +
+    'Service: installed and running' + #13#10 +
+    'Worker task: present' + #13#10 +
+    'Controller: available from the Start menu and system tray' + #13#10#13#10 +
     'The control center now lives in the system tray. You can start War Thunder and Discord normally.';
+
+  if InstallWarnings <> '' then
+    InstallStatusText := InstallStatusText + #13#10#13#10 + 'Warnings:' + #13#10 + InstallWarnings;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
