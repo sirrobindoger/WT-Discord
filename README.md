@@ -1,53 +1,61 @@
-# WarThunder Discord Rich Presence (RPC)
+# WarThunderRPC
 
-## About
+War Thunder Discord Rich Presence for Windows. The app reads War Thunder's local telemetry on `127.0.0.1:8111` and updates Discord with your current vehicle, map, and match state.
 
-![image](https://github.com/ValerieOSD/WarThunderRPC/assets/144137904/2ff2533c-d962-42cf-a2f9-0d113e9029b5)
+Download the latest `WarThunderRPC_Setup.exe` from GitHub Releases to install it. The repository is mainly for development and building releases.
 
-![image](https://github.com/ValerieOSD/WarThunderRPC/assets/144137904/26584cb8-37d0-4af3-b664-1c41f948fac1)
+## Requirements
 
+- Windows
+- Python 3.11+
 
-**This is a external application which adds War Thunder as a Discord Rich Presence application. \[1].**
+## Features
 
-\[1] This application **pulls in-game information from War Thunder through Port 8111**.
-War Thunder outputs some in-game data to 127.0.0.1:8111 and it's subfolders automatically on all machines. There really isn't much to go off and it's pretty awfully structured, but it makes do for now.
-This application modifies in no way whatsoever any data from the game, it is completely safe and will not get you banned.
+- Detects whether you are in the hangar, a test drive, or a live match
+- Shows the current vehicle and resolves a cleaner display name for many vehicles
+- Identifies the current map from War Thunder's local map telemetry
+- Tracks simple live match context such as match type and kill count
+- Supports both local testing and a packaged Windows `.exe` workflow
 
-### Requirements (The runtime comes pre-embedded into the .EXE, you do *not* need to download this. It's only for debugging.)
+Example RPC status:
 
- - [Python 3.11+](https://www.microsoft.com/store/productId/9NRWMJP3717K?ocid=pdpshare)
+> Driving a M1A1 HC, 3/4 Crew  
+> Ground Battle, 2 Kills
 
-### Features
+## Setup
 
-  - Shows if you are in the hangar, in a match, or in a test drive.
-  - Shows what map you are in.
-  - Detects what vehicle you are using.
-  - Displays simple match statistics (Air or Ground, Domination or Conquest, etc).
+Use the repo-local virtual environment for everything:
 
-Unfortunately some modes or vehicles aren't supported due to how the data is structured from the game itself,
-Naval vehicles show no data and will not work, it will show up as "Unknown vehicle".
+### Windows PowerShell
 
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
-## How to Install
+### macOS / Linux
 
- 1. Go to "Releases" tab and download the latest version's .EXE file
- 2. Run the application whilst War Thunder is open
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
+These commands are only for managing a Python environment. The packaged app, Windows service integration, and `.exe` build target are Windows-only.
 
-## Development
+## Build the EXE
 
-I'm working on this myself, as an amateur in Python, please feel free to contribute and reach out to me if you have any suggestions, feedback or ideas!
+### Windows
 
-## Discord Image Assets
+```powershell
+.venv\Scripts\python.exe build.py
+```
 
-This project defaults to `https://unixcore.sh/wt1.webp` for the hangar logo. You can still override it before starting the app or service:
+This produces `dist\WarThunderRPC_Setup.exe`.
 
-- `WARTHUNDER_RPC_LARGE_IMAGE=https://.../wt-logo.png` to use a public image URL
-- `WARTHUNDER_RPC_LARGE_IMAGE_KEY=your-asset-key` to use a Discord uploaded asset key
+## GitHub Releases
 
-## Issues
-
- - Air vehicles selected in the hangar does not update RPC, updates when a ground vehicle is selected.
- - ~~RPC is shown as 'Test Drive' at the start of matches, this is due to the game logic's objective flag not being set until the start of the match.~~
- - ~~Current vehicle is shown as "DUMMY_PLANE" at the start of matches, this is the default camera view name.~~
- - ~~Air "Operation" Mode is broken, and will show up as a 'Test Drive', this is due to the game's logic not outputting correct information.~~ FIXED - Might still take some time to detect, but it should eventually.
+Publishing a GitHub Release will trigger the Actions workflow in `.github/workflows/build-release.yml`. It builds the Windows `.exe`, uploads it as a workflow artifact, and attaches `WarThunderRPC_Setup.exe` to the published release automatically.

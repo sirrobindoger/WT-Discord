@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from user_config import normalize_username
+from .user_config import normalize_username
 
 
 KILL_VERBS = ("destroyed", "shot down")

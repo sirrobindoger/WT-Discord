@@ -1,6 +1,6 @@
 import unittest
 
-from vehicle_images import VehicleImageResolver
+from warthunder_rpc.vehicle_images import VehicleImageResolver
 
 
 class FakeResponse:
