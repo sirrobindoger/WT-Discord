@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build Windows Installer
 
 on:
   workflow_dispatch:
@@ -35,21 +35,25 @@ jobs:
         shell: pwsh
         run: .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 
-      - name: Build executable
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build runtime and installer
         shell: pwsh
         run: .\.venv\Scripts\python.exe build.py
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WarThunderRPC_Setup
-          path: dist/WarThunderRPC_Setup.exe
+          name: WarThunderRPC_Installer
+          path: dist/WarThunderRPC_Installer.exe
           if-no-files-found: error
           retention-days: 14
 
-      - name: Attach executable to GitHub Release
+      - name: Attach installer to GitHub Release
         if: github.event_name == 'release'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" "dist/WarThunderRPC_Setup.exe" --clobber
+        run: gh release upload "${{ github.event.release.tag_name }}" "dist/WarThunderRPC_Installer.exe" --clobber

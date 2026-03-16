@@ -10,9 +10,13 @@ import win32event
 import win32service
 import win32serviceutil
 
-
-WORKER_TASK_NAME = "WarThunderRPCWorker"
-WORKER_ARGUMENT = "--worker"
+from .constants import (
+    SERVICE_DESCRIPTION,
+    SERVICE_DISPLAY_NAME,
+    SERVICE_NAME,
+    WORKER_ARGUMENT,
+    WORKER_TASK_NAME,
+)
 
 
 def build_service_logger():
@@ -39,9 +43,9 @@ def build_service_logger():
 
 
 class WarThunderRPCService(win32serviceutil.ServiceFramework):
-    _svc_name_ = "WarThunderRPC"
-    _svc_display_name_ = "War Thunder Discord Rich Presence"
-    _svc_description_ = "Supervises the War Thunder Discord Rich Presence worker"
+    _svc_name_ = SERVICE_NAME
+    _svc_display_name_ = SERVICE_DISPLAY_NAME
+    _svc_description_ = SERVICE_DESCRIPTION
 
     def __init__(self, args):
         if args is not None:
@@ -56,11 +60,15 @@ class WarThunderRPCService(win32serviceutil.ServiceFramework):
         self.logger = build_service_logger()
         self.check_interval = 3
         self.idle_check_interval = 10
+        self.worker_launch_timeout = 8
         self.worker_task_name = WORKER_TASK_NAME
+        self._shutdown_requested = False
         self._worker_launch_logged = False
+        self._shutdown_logged = False
         self.logger.info("Service initialized. Running as service: %s", self.is_running_as_service)
 
     def SvcStop(self):
+        self._shutdown_requested = True
         if self.is_running_as_service:
             self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
             win32event.SetEvent(self.stop_event)
@@ -81,9 +89,14 @@ class WarThunderRPCService(win32serviceutil.ServiceFramework):
             servicemanager.LogErrorMsg(f"Service failed: {exc}")
 
     def should_stop(self):
+        if self._shutdown_requested:
+            return True
         if not self.is_running_as_service:
             return False
-        return win32event.WaitForSingleObject(self.stop_event, 1000) == win32event.WAIT_OBJECT_0
+        stopped = win32event.WaitForSingleObject(self.stop_event, 1000) == win32event.WAIT_OBJECT_0
+        if stopped:
+            self._shutdown_requested = True
+        return stopped
 
     @staticmethod
     def is_worker_running():
@@ -98,13 +111,22 @@ class WarThunderRPCService(win32serviceutil.ServiceFramework):
         return False
 
     def launch_worker(self):
+        if self._shutdown_requested:
+            return False
+
         try:
             subprocess.run(
                 ["schtasks", "/run", "/tn", self.worker_task_name],
                 check=True,
                 capture_output=True,
                 text=True,
+                timeout=self.worker_launch_timeout,
             )
+        except subprocess.TimeoutExpired:
+            if not self._worker_launch_logged:
+                self.logger.error("Worker launch timed out after %s seconds", self.worker_launch_timeout)
+                self._worker_launch_logged = True
+            return False
         except Exception as exc:
             if not self._worker_launch_logged:
                 self.logger.error("Worker launch failure: %s", exc)
@@ -116,12 +138,18 @@ class WarThunderRPCService(win32serviceutil.ServiceFramework):
         return True
 
     def supervise_worker(self):
+        if self._shutdown_requested:
+            if not self._shutdown_logged:
+                self.logger.info("Shutdown requested; skipping worker supervision")
+                self._shutdown_logged = True
+            return 0
+
         if self.is_worker_running():
             self._worker_launch_logged = False
             return self.check_interval
 
-        self.launch_worker()
-        return self.idle_check_interval
+        launched = self.launch_worker()
+        return self.idle_check_interval if launched else self.check_interval
 
     def _wait(self, seconds):
         if seconds <= 0:
@@ -133,7 +161,11 @@ class WarThunderRPCService(win32serviceutil.ServiceFramework):
 
     def run_service(self):
         try:
+            self.logger.info("Starting main service loop")
             while not self.should_stop():
-                self._wait(self.supervise_worker())
+                wait_seconds = self.supervise_worker()
+                if self._shutdown_requested:
+                    break
+                self._wait(wait_seconds)
         finally:
             self.logger.info("Service stopped")
