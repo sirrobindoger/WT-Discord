@@ -2,6 +2,8 @@
 
 War Thunder Discord Rich Presence for Windows. The app reads War Thunder's local telemetry on `127.0.0.1:8111` and updates Discord with your current vehicle, map, and match state.
 
+To install it, download the latest `WarThunderRPC_Setup.exe` from the GitHub Releases page.
+
 ## Requirements
 
 - Windows
@@ -51,3 +53,7 @@ python -m pip install -r requirements.txt
 ```
 
 This produces `dist\WarThunderRPC_Setup.exe`.
+
+## GitHub Releases
+
+Publishing a GitHub Release will trigger the Actions workflow in `.github/workflows/build-release.yml`. It builds the Windows `.exe`, uploads it as a workflow artifact, and attaches `WarThunderRPC_Setup.exe` to the published release automatically.
