@@ -93,3 +93,7 @@ To remove the service manually:
 ## GitHub Releases
 
 Publishing a GitHub Release will trigger the Actions workflow in `.github/workflows/build-release.yml`. It builds the runtime EXE, packages the Windows installer, uploads it as a workflow artifact, and attaches `WarThunderRPC_Installer.exe` to the published release automatically.
+
+## Acknowledgements
+
+Special thanks to [ValerieOSD/WarThunderRPC](https://github.com/ValerieOSD/WarThunderRPC) for the original project and inspiration for this repository.
