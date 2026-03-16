@@ -1,12 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
+
+
+numpy_binaries = collect_dynamic_libs("numpy")
+numpy_hiddenimports = collect_submodules(
+    "numpy._core",
+    filter=lambda name: ".tests" not in name,
+)
 
 a = Analysis(
     ["main.py"],
     pathex=["."],
-    binaries=[],
+    binaries=numpy_binaries,
     datas=[],
-    hiddenimports=[
+    hiddenimports=numpy_hiddenimports + [
         "win32timezone",
         "PIL",
         "pypresence",
@@ -38,7 +46,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
