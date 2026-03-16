@@ -161,7 +161,6 @@ class ControllerApp:
             pystray.MenuItem("Open Control Center", lambda icon, item: self._queue.put(("show", None))),
             pystray.MenuItem("Start Service", lambda icon, item: self._queue.put(("action", "start"))),
             pystray.MenuItem("Stop Background RPC", lambda icon, item: self._queue.put(("action", "stop"))),
-            pystray.MenuItem("Enable Auto Start", lambda icon, item: self._queue.put(("action", "enable"))),
             pystray.MenuItem("Disable Service", lambda icon, item: self._queue.put(("action", "disable"))),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Exit Controller", lambda icon, item: self._queue.put(("exit", None))),
