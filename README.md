@@ -28,15 +28,25 @@ Unfortunately some modes or vehicles aren't supported due to how the data is str
 Naval vehicles show no data and will not work, it will show up as "Unknown vehicle".
 
 
-## How to Install
+## Workflows
 
- 1. Go to "Releases" tab and download the latest version's .EXE file
- 2. Run the application whilst War Thunder is open
+### Run Locally for Testing
 
+1. Install dependencies with `python -m pip install -r requirements.txt`
+2. Start the local tester with `python WarThunderRPC.py`
+
+This path uses the shared `warthunder_rpc` package directly, so local testing and the packaged app now execute the same core logic.
+
+### Build the `.exe`
+
+1. Install dependencies with `python -m pip install -r requirements.txt`
+2. Build the Windows executable with `python build.py`
+
+The generated executable keeps the installer GUI and Windows service flow as its default launch behavior.
 
 ## Development
 
-I'm working on this myself, as an amateur in Python, please feel free to contribute and reach out to me if you have any suggestions, feedback or ideas!
+The shared source of truth now lives in `warthunder_rpc/`. The root scripts and the remaining `service/` scripts are thin wrappers only.
 
 ## Discord Image Assets
 

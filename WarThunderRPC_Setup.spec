@@ -2,11 +2,23 @@
 
 
 a = Analysis(
-    ['main.py'],
-    pathex=['..'],
+    ["main.py"],
+    pathex=["."],
     binaries=[],
-    datas=[('warthunder_rpc_service.py', '.'), ('installer.py', '.'), ('telemetry.py', '.'), ('mapinfo.py', '.'), ('maps.py', '.')],
-    hiddenimports=['win32timezone', 'PIL', 'pypresence', 'requests', 'telemetry', 'telemetry.mapinfo', 'win32serviceutil', 'win32service', 'win32event', 'servicemanager', 'nest_asyncio', 'asyncio', 'threading', 'psutil', 'winreg', 'vehicle_images'],
+    datas=[],
+    hiddenimports=[
+        "win32timezone",
+        "PIL",
+        "pypresence",
+        "requests",
+        "win32serviceutil",
+        "win32service",
+        "win32event",
+        "servicemanager",
+        "psutil",
+        "imagehash",
+        "simplejson",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -22,7 +34,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='WarThunderRPC_Setup',
+    name="WarThunderRPC_Setup",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -35,5 +47,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['icon.ico'],
+    icon=["service/icon.ico"],
 )

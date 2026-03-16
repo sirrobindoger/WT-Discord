@@ -5,7 +5,7 @@ Module to query and access telemetry data during War Thunder matches
 
 import socket
 import requests
-import mapinfo
+from . import mapinfo
 
 
 IP_ADDRESS     = socket.gethostbyname(socket.gethostname())

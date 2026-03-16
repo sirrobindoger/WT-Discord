@@ -15,7 +15,7 @@ from urllib.error import URLError
 from urllib.request import urlretrieve
 from requests.exceptions import ReadTimeout, ConnectTimeout
 from math import radians, degrees, sqrt, sin, asin, cos, atan2
-from maps import maps
+from .maps import maps
 
 
 LOCAL_PATH   = os.path.dirname(os.path.realpath(__file__))
