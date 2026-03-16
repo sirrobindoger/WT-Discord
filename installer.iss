@@ -17,6 +17,7 @@ OutputBaseFilename={#MyOutputName}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=assets\logo.ico
 PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=dialog
 DisableProgramGroupPage=yes

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox
 
 import pystray
@@ -63,11 +64,40 @@ def ensure_single_instance():
     return mutex
 
 
+def _resource_root():
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent.parent
+
+
+def _logo_path():
+    return _resource_root() / "assets" / "logo.png"
+
+
 def _build_tray_image(color):
-    image = Image.new("RGBA", (64, 64), (18, 20, 26, 255))
+    try:
+        logo = Image.open(_logo_path()).convert("RGBA")
+        logo.thumbnail((56, 56), Image.Resampling.LANCZOS)
+    except Exception:
+        image = Image.new("RGBA", (64, 64), (18, 20, 26, 255))
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((8, 8, 56, 56), radius=14, fill=(32, 36, 44, 255))
+        draw.ellipse((22, 22, 42, 42), fill=color)
+        return image
+
+    image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    shadow = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow)
+    shadow_draw.rounded_rectangle((6, 6, 58, 58), radius=16, fill=(16, 18, 24, 215))
+    image.alpha_composite(shadow)
+
+    logo_x = (64 - logo.width) // 2
+    logo_y = (64 - logo.height) // 2
+    image.alpha_composite(logo, (logo_x, logo_y))
+
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((8, 8, 56, 56), radius=14, fill=(32, 36, 44, 255))
-    draw.ellipse((22, 22, 42, 42), fill=color)
+    draw.ellipse((42, 42, 58, 58), fill=(20, 22, 28, 255))
+    draw.ellipse((44, 44, 56, 56), fill=color)
     return image
 
 

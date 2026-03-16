@@ -13,7 +13,7 @@ a = Analysis(
     ["main.py"],
     pathex=["."],
     binaries=numpy_binaries,
-    datas=[],
+    datas=[("assets/logo.png", "assets")],
     hiddenimports=numpy_hiddenimports + [
         "win32timezone",
         "PIL",
@@ -61,5 +61,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=[],
+    icon="assets/logo.ico",
 )
