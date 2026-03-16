@@ -1,4 +1,4 @@
-# WarThunderRPC
+# War Thunder Discord Rich Presence
 
 War Thunder Discord Rich Presence for Windows. The app reads War Thunder's local telemetry on `127.0.0.1:8111` and updates Discord with your current vehicle, map, and match state.
 
