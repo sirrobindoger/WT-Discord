@@ -45,6 +45,8 @@ var
   UsernamePage: TInputQueryWizardPage;
   SummaryPage: TWizardPage;
   SummaryLabel: TNewStaticText;
+  InstallLogLabel: TNewStaticText;
+  InstallLogMemo: TNewMemo;
   InstallStatusText: String;
   InstallWarnings: String;
 
@@ -68,14 +70,36 @@ begin
   Result := InstallerLogDir() + '\installer.log';
 end;
 
-procedure AppendInstallerLog(const Message: String);
+procedure AppendInstallerUiLog(const Message: String);
 begin
+  if InstallLogMemo = nil then
+    exit;
+
+  if InstallLogMemo.Text <> '' then
+    InstallLogMemo.Text := InstallLogMemo.Text + #13#10;
+  InstallLogMemo.Text := InstallLogMemo.Text + Message;
+  InstallLogMemo.SelStart := Length(InstallLogMemo.Text);
+  InstallLogMemo.SelLength := 0;
+  WizardForm.Update();
+end;
+
+procedure AppendInstallerLog(const Message: String);
+var
+  LogLine: String;
+begin
+  LogLine := GetDateTimeString('yyyy-mm-dd hh:nn:ss', #0, #0) + ' ' + Message;
   ForceDirectories(InstallerLogDir());
   SaveStringToFile(
     InstallerLogPath(),
-    GetDateTimeString('yyyy-mm-dd hh:nn:ss', #0, #0) + ' ' + Message + #13#10,
+    LogLine + #13#10,
     True
   );
+  AppendInstallerUiLog(LogLine);
+end;
+
+procedure LogInstallerStep(const Message: String);
+begin
+  AppendInstallerLog('STEP: ' + Message);
 end;
 
 procedure AddInstallWarning(const Message: String);
@@ -167,21 +191,28 @@ var
   ResultCode: Integer;
   OutputText: String;
 begin
-  AppendInstallerLog('Starting cleanup of previous install state');
+  LogInstallerStep('Starting cleanup of previous install state');
 
   if FileExists(RuntimeExePath(ExpandConstant('{app}'))) then
   begin
+    LogInstallerStep('Cleaning up the previously installed runtime helper processes');
     RunRuntimeCapture(ExpandConstant('{app}'), '--cleanup-runtime-processes', ResultCode, OutputText);
+    LogInstallerStep('Disabling controller auto-start for the previous install');
     RunRuntimeCapture(ExpandConstant('{app}'), '--disable-controller-autostart', ResultCode, OutputText);
+    LogInstallerStep('Removing the previous service and worker task via runtime helper');
     RunRuntimeCapture(ExpandConstant('{app}'), '--uninstall-service', ResultCode, OutputText);
   end;
 
+  LogInstallerStep('Force-stopping any leftover WarThunderRPC.exe processes');
   RunShellCapture('taskkill /F /T /IM WarThunderRPC.exe', ResultCode, OutputText);
+  LogInstallerStep('Sending stop to any existing WarThunderRPC Windows service');
   RunShellCapture('sc stop WarThunderRPC', ResultCode, OutputText);
+  LogInstallerStep('Deleting any existing WarThunderRPC Windows service entry');
   RunShellCapture('sc delete WarThunderRPC', ResultCode, OutputText);
+  LogInstallerStep('Deleting any existing WarThunderRPC worker scheduled task');
   RunShellCapture('schtasks /delete /f /tn WarThunderRPCWorker', ResultCode, OutputText);
   Sleep(2000);
-  AppendInstallerLog('Finished cleanup of previous install state');
+  LogInstallerStep('Finished cleanup of previous install state');
 end;
 
 function EnsureUsernameConfigured(): Boolean;
@@ -206,6 +237,8 @@ procedure InitializeWizard;
 var
   IntroText: TNewStaticText;
   UsernameNote: TNewStaticText;
+  LogTop: Integer;
+  LogHeight: Integer;
 begin
   IntroPage := CreateCustomPage(
     wpWelcome,
@@ -258,6 +291,31 @@ begin
   SummaryLabel.Height := ScaleY(180);
   SummaryLabel.WordWrap := True;
   SummaryLabel.Caption := 'War Thunder RPC is ready to install.';
+
+  InstallLogLabel := TNewStaticText.Create(WizardForm);
+  InstallLogLabel.Parent := WizardForm.InstallingPage;
+  InstallLogLabel.Left := 0;
+  InstallLogLabel.Top := WizardForm.ProgressGauge.Top + WizardForm.ProgressGauge.Height + ScaleY(12);
+  InstallLogLabel.Width := WizardForm.InstallingPage.ClientWidth;
+  InstallLogLabel.Caption := 'Live install log';
+  InstallLogLabel.Visible := False;
+
+  LogTop := InstallLogLabel.Top + InstallLogLabel.Height + ScaleY(6);
+  LogHeight := WizardForm.InstallingPage.ClientHeight - LogTop - ScaleY(6);
+  if LogHeight < ScaleY(120) then
+    LogHeight := ScaleY(120);
+
+  InstallLogMemo := TNewMemo.Create(WizardForm);
+  InstallLogMemo.Parent := WizardForm.InstallingPage;
+  InstallLogMemo.Left := 0;
+  InstallLogMemo.Top := LogTop;
+  InstallLogMemo.Width := WizardForm.InstallingPage.ClientWidth;
+  InstallLogMemo.Height := LogHeight;
+  InstallLogMemo.ReadOnly := True;
+  InstallLogMemo.ScrollBars := ssVertical;
+  InstallLogMemo.WordWrap := False;
+  InstallLogMemo.WantReturns := False;
+  InstallLogMemo.Visible := False;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -266,6 +324,7 @@ begin
   InstallStatusText := '';
   InstallWarnings := '';
   AppendInstallerLog('--- Starting install session ---');
+  LogInstallerStep('Installer is preparing the target machine');
   CleanupExistingInstall;
 end;
 
@@ -282,25 +341,33 @@ begin
   if CurStep <> ssPostInstall then
     exit;
 
+  LogInstallerStep('Beginning post-install runtime configuration');
+
   UsernameParam := '--set-username ' + QuoteForParam(Trim(UsernamePage.Values[0]));
+  LogInstallerStep('Saving the configured War Thunder username');
   if not RunRuntimeCapture(ExpandConstant('{app}'), UsernameParam, ResultCode, OutputText) or (ResultCode <> 0) then
     RaiseException('The installer could not save the War Thunder username for kill tracking. See ' + InstallerLogPath());
+  LogInstallerStep('War Thunder username saved successfully');
 
+  LogInstallerStep('Enabling controller auto-start');
   if not RunRuntimeCapture(ExpandConstant('{app}'), '--enable-controller-autostart', ResultCode, OutputText) or (ResultCode <> 0) then
     AddInstallWarning('The controller could not be configured to start automatically. You can still launch it from the Start menu.');
 
   InstallParam :=
     '--install-service --runtime-path ' + QuoteForParam(RuntimeExePath(ExpandConstant('{app}')));
+  LogInstallerStep('Installing the Windows service and worker scheduled task');
   if not RunRuntimeCapture(ExpandConstant('{app}'), InstallParam, ResultCode, OutputText) then
     AddInstallWarning('The install helper did not report success. Verifying final state now.')
   else if ResultCode <> 0 then
     AddInstallWarning('The install helper reported a recoverable issue. Verifying final state now.');
 
+  LogInstallerStep('Waiting briefly before final health verification');
   Sleep(3000);
 
   StatusVerified := False;
   for StatusAttempt := 1 to 3 do
   begin
+    LogInstallerStep('Verifying final runtime state (attempt ' + IntToStr(StatusAttempt) + ' of 3)');
     if not RunRuntimeCapture(ExpandConstant('{app}'), '--status-json', ResultCode, StatusOutput) then
     begin
       AppendInstallerLog('Status attempt ' + IntToStr(StatusAttempt) + ': exec failed');
@@ -309,6 +376,7 @@ begin
     end;
     if StatusLooksHealthy(StatusOutput) then
     begin
+      LogInstallerStep('Final runtime state verified successfully');
       StatusVerified := True;
       Break;
     end;
@@ -328,6 +396,7 @@ begin
     );
   end;
 
+  LogInstallerStep('Launching the control center');
   if not Exec(RuntimeExePath(ExpandConstant('{app}')), '--controller', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, ResultCode) then
     AddInstallWarning('The control center could not be launched automatically. You can still open it from the Start menu.');
 
@@ -341,10 +410,17 @@ begin
 
   if InstallWarnings <> '' then
     InstallStatusText := InstallStatusText + #13#10#13#10 + 'Warnings:' + #13#10 + InstallWarnings;
+
+  LogInstallerStep('Post-install configuration finished');
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  if InstallLogLabel <> nil then
+    InstallLogLabel.Visible := CurPageID = wpInstalling;
+  if InstallLogMemo <> nil then
+    InstallLogMemo.Visible := CurPageID = wpInstalling;
+
   if CurPageID = SummaryPage.ID then
   begin
     if InstallStatusText = '' then
