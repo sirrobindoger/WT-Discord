@@ -10,9 +10,13 @@ import win32event
 import win32service
 import win32serviceutil
 
-
-WORKER_TASK_NAME = "WarThunderRPCWorker"
-WORKER_ARGUMENT = "--worker"
+from .constants import (
+    SERVICE_DESCRIPTION,
+    SERVICE_DISPLAY_NAME,
+    SERVICE_NAME,
+    WORKER_ARGUMENT,
+    WORKER_TASK_NAME,
+)
 
 
 def build_service_logger():
@@ -39,9 +43,9 @@ def build_service_logger():
 
 
 class WarThunderRPCService(win32serviceutil.ServiceFramework):
-    _svc_name_ = "WarThunderRPC"
-    _svc_display_name_ = "War Thunder Discord Rich Presence"
-    _svc_description_ = "Supervises the War Thunder Discord Rich Presence worker"
+    _svc_name_ = SERVICE_NAME
+    _svc_display_name_ = SERVICE_DISPLAY_NAME
+    _svc_description_ = SERVICE_DESCRIPTION
 
     def __init__(self, args):
         if args is not None:

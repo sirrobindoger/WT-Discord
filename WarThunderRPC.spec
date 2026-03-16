@@ -42,7 +42,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="WarThunderRPC_Setup",
+    name="WarThunderRPC",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
