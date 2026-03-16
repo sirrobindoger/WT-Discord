@@ -61,7 +61,7 @@ class PresencePayloadTests(unittest.TestCase):
 
         self.assertEqual(payload["large_image"], "https://example.com/m1.png")
         self.assertEqual(payload["large_text"], "Kursk")
-        self.assertEqual(payload["details"], "Ground Battle | 2 Kills")
+        self.assertEqual(payload["details"], "Ground Battle, 2 Kills")
 
 
 if __name__ == "__main__":
