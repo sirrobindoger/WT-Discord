@@ -46,7 +46,7 @@ The generated executable keeps the installer GUI and Windows service flow as its
 
 ## Development
 
-The shared source of truth now lives in `warthunder_rpc/`. The root scripts and the remaining `service/` scripts are thin wrappers only.
+The shared source of truth now lives in `warthunder_rpc/`. The only supported entrypoints are the root local runner and the root build / installer path.
 
 ## Discord Image Assets
 

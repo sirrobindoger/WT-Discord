@@ -1,7 +1,7 @@
 import unittest
 
-from kill_tracker import KillTracker, PlayerIdentity, parse_damage_message
-from user_config import normalize_username
+from warthunder_rpc.kill_tracker import KillTracker, PlayerIdentity, parse_damage_message
+from warthunder_rpc.user_config import normalize_username
 
 
 class NormalizeUsernameTests(unittest.TestCase):

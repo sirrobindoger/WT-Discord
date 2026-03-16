@@ -1,14 +1,7 @@
 __pycache__/
 *.py[cod]
-
-map.jpg
 build/
 dist/
-
-service/__pycache__/
-service/build/
-service/dist/
-service/*.log
 
 .venv/
 venv/
