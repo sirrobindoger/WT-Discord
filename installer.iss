@@ -148,6 +148,20 @@ begin
     (Pos('"task_exists": true', OutputText) > 0);
 end;
 
+procedure LogStatusDiagnostics(const OutputText: String);
+begin
+  if Pos('"service_installed": true', OutputText) = 0 then
+    AppendInstallerLog('DIAG: service_installed is NOT true');
+  if Pos('"service_running": true', OutputText) = 0 then
+    AppendInstallerLog('DIAG: service_running is NOT true');
+  if Pos('"task_exists": true', OutputText) = 0 then
+    AppendInstallerLog('DIAG: task_exists is NOT true');
+  if Pos('"status_error":', OutputText) > 0 then
+    AppendInstallerLog('DIAG: status_error key present (Python-side query error)');
+  if Trim(OutputText) = '' then
+    AppendInstallerLog('DIAG: status output was empty');
+end;
+
 procedure CleanupExistingInstall;
 var
   ResultCode: Integer;
@@ -262,6 +276,8 @@ var
   InstallParam: String;
   OutputText: String;
   StatusOutput: String;
+  StatusAttempt: Integer;
+  StatusVerified: Boolean;
 begin
   if CurStep <> ssPostInstall then
     exit;
@@ -280,13 +296,36 @@ begin
   else if ResultCode <> 0 then
     AddInstallWarning('The install helper reported a recoverable issue. Verifying final state now.');
 
-  if not RunRuntimeCapture(ExpandConstant('{app}'), '--status-json', ResultCode, StatusOutput) then
-    RaiseException('The installer could not verify the final service status. See ' + InstallerLogPath());
+  Sleep(3000);
 
-  if (ResultCode <> 0) or not StatusLooksHealthy(StatusOutput) then
+  StatusVerified := False;
+  for StatusAttempt := 1 to 3 do
   begin
-    AppendInstallerLog('Final status verification failed: ' + StatusOutput);
-    RaiseException('The installer could not verify a working service. See ' + InstallerLogPath());
+    if not RunRuntimeCapture(ExpandConstant('{app}'), '--status-json', ResultCode, StatusOutput) then
+    begin
+      AppendInstallerLog('Status attempt ' + IntToStr(StatusAttempt) + ': exec failed');
+      if StatusAttempt < 3 then Sleep(3000);
+      Continue;
+    end;
+    if StatusLooksHealthy(StatusOutput) then
+    begin
+      StatusVerified := True;
+      Break;
+    end;
+    AppendInstallerLog('Status attempt ' + IntToStr(StatusAttempt) + ': not healthy yet');
+    LogStatusDiagnostics(StatusOutput);
+    if StatusAttempt < 3 then Sleep(3000);
+  end;
+
+  if not StatusVerified then
+  begin
+    LogStatusDiagnostics(StatusOutput);
+    AppendInstallerLog('All status attempts failed. Last output: ' + StatusOutput);
+    AddInstallWarning(
+      'The service did not confirm as running during install. ' +
+      'It may still start on its own. ' +
+      'Check ' + InstallerLogPath() + ' if problems persist.'
+    );
   end;
 
   if not Exec(RuntimeExePath(ExpandConstant('{app}')), '--controller', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, ResultCode) then

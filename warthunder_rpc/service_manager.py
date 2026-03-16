@@ -141,14 +141,27 @@ def query_task_exists(task_name=WORKER_TASK_NAME, *, runner: CommandRunner = sub
 
 
 def get_service_status(*, runner: CommandRunner = subprocess.run):
-    state = query_service_state(runner=runner)
-    start_type = query_service_start_type(runner=runner)
+    try:
+        state = query_service_state(runner=runner)
+    except ServiceManagerError:
+        state = None
+
+    try:
+        start_type = query_service_start_type(runner=runner)
+    except ServiceManagerError:
+        start_type = None
+
+    try:
+        task_exists = query_task_exists(runner=runner)
+    except ServiceManagerError:
+        task_exists = False
+
     return {
         "service_installed": state is not None,
         "service_state": state or "NOT_INSTALLED",
         "service_start_type": start_type or "UNKNOWN",
         "service_running": state == "RUNNING",
-        "task_exists": query_task_exists(runner=runner),
+        "task_exists": task_exists,
     }
 
 

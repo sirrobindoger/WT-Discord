@@ -164,7 +164,20 @@ def main(argv=None):
             return
 
         if args.status_json:
-            _emit_json(_build_status_payload())
+            try:
+                payload = _build_status_payload()
+            except Exception as exc:
+                payload = {
+                    "service_installed": False,
+                    "service_state": "UNKNOWN",
+                    "service_start_type": "UNKNOWN",
+                    "service_running": False,
+                    "task_exists": False,
+                    "controller_autostart_enabled": False,
+                    "username": "",
+                    "status_error": str(exc),
+                }
+            _emit_json(payload)
 
         if args.enable_controller_autostart:
             runtime_path = _resolve_self_runtime_path(args.runtime_path)

@@ -10,6 +10,7 @@ from warthunder_rpc.service_manager import (
     controller_autostart_enabled,
     disable_service,
     enable_service,
+    get_service_status,
     install_runtime_service,
     set_controller_autostart,
     stop_service,
@@ -121,6 +122,19 @@ class InstallRuntimeServiceTests(unittest.TestCase):
             create_worker_task.assert_called_once()
             create_service.assert_called_once()
             start_service.assert_called_once()
+
+
+class GetServiceStatusTests(unittest.TestCase):
+    def test_get_service_status_tolerates_query_errors(self):
+        with patch("warthunder_rpc.service_manager.query_service_state", side_effect=ServiceManagerError("sc error")):
+            with patch("warthunder_rpc.service_manager.query_service_start_type", side_effect=ServiceManagerError("sc error")):
+                with patch("warthunder_rpc.service_manager.query_task_exists", side_effect=ServiceManagerError("schtasks error")):
+                    status = get_service_status()
+
+        self.assertFalse(status["service_running"])
+        self.assertFalse(status["service_installed"])
+        self.assertFalse(status["task_exists"])
+        self.assertEqual(status["service_state"], "NOT_INSTALLED")
 
 
 class ControllerAutostartTests(unittest.TestCase):

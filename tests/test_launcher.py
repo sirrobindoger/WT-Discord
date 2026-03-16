@@ -67,6 +67,19 @@ class LauncherJsonOutputTests(unittest.TestCase):
         self.assertFalse(payload["success"])
         self.assertEqual(payload["error"], "failed")
 
+    def test_status_json_exits_0_on_service_manager_error(self):
+        with patch("warthunder_rpc.launcher.get_service_status", side_effect=ServiceManagerError("sc query failed")):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                with self.assertRaises(SystemExit) as exc:
+                    main(["--status-json"])
+
+        self.assertEqual(exc.exception.code, 0)
+        payload = json.loads(output.getvalue())
+        self.assertFalse(payload["service_running"])
+        self.assertFalse(payload["task_exists"])
+        self.assertIn("status_error", payload)
+
 
 if __name__ == "__main__":
     unittest.main()
