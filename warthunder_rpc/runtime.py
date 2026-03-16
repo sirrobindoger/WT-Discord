@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+import psutil
 import requests
 from PIL import Image
 from pypresence import Presence
@@ -36,6 +37,12 @@ class RuntimeOptions:
     stop_requested: Optional[Callable[[], bool]] = None
     active_interval: int = 3
     idle_interval: int = 10
+    telemetry_grace_seconds: int = 20
+    rpc_retry_interval: int = 5
+    clear_presence_on_game_exit: bool = True
+    discord_retry_backoff_max: int = 60
+    time_provider: Callable[[], float] = time.time
+    sleep_provider: Callable[[float], None] = time.sleep
 
 
 class WarThunderRPCApp:
@@ -51,11 +58,22 @@ class WarThunderRPCApp:
         self.rpc_factory = rpc_factory
         self.client_id = "1211769535468937237"
         self.rpc = None
-        self.clock_timer = int(time.time())
+        self.clock_timer = int(self.now())
         self.base_url = "http://127.0.0.1:8111"
-        self.check_process_running = self.options.check_process_running
+        self.check_process_running = self.options.check_process_running or self._is_aces_running
         self.stop_requested = self.options.stop_requested or (lambda: False)
         self.image_resolver = VehicleImageResolver(logger=self.logger)
+
+        self.runtime_state = "game_not_running"
+        self.last_good_state = None
+        self.last_presence_payload = None
+        self.last_telemetry_ok_at = None
+        self.last_rpc_error_at = None
+        self.presence_active = False
+        self.rpc_connected = False
+        self._rpc_retry_delay = max(1, self.options.rpc_retry_interval)
+        self._next_rpc_connect_at = 0.0
+        self._logged_messages = set()
 
         if player_name is None:
             if self.options.prompt_for_username:
@@ -66,22 +84,81 @@ class WarThunderRPCApp:
         self.player_name = player_name
         self.kill_tracker = KillTracker(PlayerIdentity(self.player_name))
 
+    def now(self):
+        return float(self.options.time_provider())
+
+    @staticmethod
+    def _is_aces_running():
+        for process in psutil.process_iter(["name"]):
+            try:
+                if (process.info.get("name") or "").lower() == "aces.exe":
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        return False
+
+    def _log_once(self, key, level, message, *args):
+        if key in self._logged_messages:
+            return
+        self._logged_messages.add(key)
+        self.logger.log(level, message, *args)
+
+    def _clear_log_once(self, *keys):
+        for key in keys:
+            self._logged_messages.discard(key)
+
+    def _set_runtime_state(self, state):
+        self.runtime_state = state
+
+    def _mark_rpc_unavailable(self, exc):
+        self.last_rpc_error_at = self.now()
+        self.rpc_connected = False
+        self._set_runtime_state("discord_unavailable")
+        self._log_once("discord_unavailable", logging.WARNING, "Discord RPC unavailable: %s", exc)
+        self._next_rpc_connect_at = self.now() + self._rpc_retry_delay
+        self._rpc_retry_delay = min(
+            max(1, self.options.discord_retry_backoff_max),
+            max(1, self._rpc_retry_delay * 2),
+        )
+        self.disconnect_rpc()
+
+    def _reset_rpc_backoff(self):
+        self._rpc_retry_delay = max(1, self.options.rpc_retry_interval)
+        self._next_rpc_connect_at = 0.0
+        self._clear_log_once("discord_unavailable")
+
     def connect_rpc(self):
         if self.rpc is not None:
-            return
+            return True
 
-        self.rpc = self.rpc_factory(self.client_id)
-        self.rpc.connect()
-        self.clock_timer = int(time.time())
+        if self.now() < self._next_rpc_connect_at:
+            return False
+
+        try:
+            self.rpc = self.rpc_factory(self.client_id)
+            self.rpc.connect()
+        except Exception as exc:
+            self._mark_rpc_unavailable(exc)
+            return False
+
+        self.rpc_connected = True
+        self.clock_timer = int(self.now())
+        self._reset_rpc_backoff()
+        self._log_once("rpc_recovered", logging.INFO, "Discord RPC connected")
+        return True
 
     def disconnect_rpc(self):
         if self.rpc is None:
+            self.rpc_connected = False
             return
 
         try:
             self.rpc.close()
+        except Exception as exc:
+            self.logger.debug("Error closing Discord RPC: %s", exc)
         finally:
             self.rpc = None
+            self.rpc_connected = False
 
     def fetch_hudmsg(self, last_evt=0, last_dmg=0):
         try:
@@ -153,10 +230,6 @@ class WarThunderRPCApp:
             response.raise_for_status()
             return json.loads(response.text)
         except Exception as exc:
-            if endpoint == "indicators" and self.options.mode == "local":
-                raise RuntimeError(
-                    "War Thunder is not running, or port 8111 is already occupied!"
-                ) from exc
             self.logger.debug("Error fetching %s: %s", endpoint, exc)
             return None
 
@@ -308,39 +381,131 @@ class WarThunderRPCApp:
 
         return {**base_presence, "state": "Unknown vehicle", "details": "In-game"}
 
+    def _publish_presence(self, presence_data):
+        self.last_presence_payload = presence_data
+        if not self.connect_rpc():
+            return False
+
+        try:
+            self.rpc.update(**presence_data)
+        except Exception as exc:
+            self._mark_rpc_unavailable(exc)
+            return False
+
+        self.presence_active = True
+        self.rpc_connected = True
+        self._clear_log_once("rpc_recovered")
+        self.logger.info("Updated presence: %s", presence_data)
+        return True
+
+    def clear_presence(self, reason=""):
+        if self.rpc is None or not self.presence_active:
+            self.presence_active = False
+            return True
+
+        try:
+            self.rpc.clear()
+            self._log_once(
+                f"presence_cleared:{reason or 'default'}",
+                logging.INFO,
+                "Cleared Discord presence%s",
+                f" ({reason})" if reason else "",
+            )
+        except Exception as exc:
+            self._mark_rpc_unavailable(exc)
+            return False
+
+        self.presence_active = False
+        return True
+
+    def _reset_session_state(self):
+        self.kill_tracker.reset_session()
+        self.last_good_state = None
+        self.last_presence_payload = None
+        self.last_telemetry_ok_at = None
+
+    def _handle_game_not_running(self):
+        self._set_runtime_state("game_not_running")
+        self._log_once("game_missing", logging.INFO, "War Thunder not detected; waiting")
+        self._clear_log_once("telemetry_gap", "loading_transition")
+        if self.options.clear_presence_on_game_exit:
+            self.clear_presence("game closed")
+        self.disconnect_rpc()
+        self._reset_session_state()
+
+    def _handle_telemetry_gap(self):
+        telemetry_age = None
+        if self.last_telemetry_ok_at is not None:
+            telemetry_age = self.now() - self.last_telemetry_ok_at
+
+        in_grace_period = (
+            self.last_good_state is not None
+            and telemetry_age is not None
+            and telemetry_age <= self.options.telemetry_grace_seconds
+        )
+
+        if in_grace_period:
+            self._set_runtime_state("loading_transition")
+            self._log_once(
+                "loading_transition",
+                logging.INFO,
+                "Telemetry temporarily unavailable; preserving last known state",
+            )
+            self._clear_log_once("telemetry_gap")
+            if self.last_presence_payload is not None:
+                self._publish_presence(self.last_presence_payload)
+            return
+
+        self._set_runtime_state("telemetry_unavailable")
+        self._log_once(
+            "telemetry_gap",
+            logging.INFO,
+            "Telemetry unavailable while War Thunder is running; waiting for recovery",
+        )
+        self._clear_log_once("loading_transition")
+        if self.options.clear_presence_on_game_exit:
+            self.clear_presence("telemetry unavailable")
+        self.disconnect_rpc()
+
+    @staticmethod
+    def _classify_state(state):
+        if state["in_map"] and state["in_match"]:
+            return "match"
+        if state["is_in_vehicle"] and state["in_map"]:
+            return "test_drive"
+        return "hangar"
+
+    def _handle_live_state(self, state):
+        self.last_good_state = state
+        self.last_telemetry_ok_at = self.now()
+        self._clear_log_once("game_missing", "telemetry_gap", "loading_transition")
+        self._set_runtime_state(self._classify_state(state))
+        self._publish_presence(self.build_presence_data(state))
+
     def tick(self):
-        if self.check_process_running and not self.check_process_running():
-            self.disconnect_rpc()
+        if not self.check_process_running():
+            self._handle_game_not_running()
             return self.options.idle_interval
 
-        self.connect_rpc()
         state = self.get_game_state()
         if state is None:
+            self._handle_telemetry_gap()
             return self.options.active_interval
 
-        presence_data = self.build_presence_data(state)
-        self.rpc.update(**presence_data)
-        self.logger.info("Updated presence: %s", presence_data)
+        self._handle_live_state(state)
         return self.options.active_interval
 
     def run_forever(self):
         while not self.stop_requested():
             try:
                 delay = self.tick()
-            except RuntimeError as exc:
-                if self.options.mode == "local":
-                    print(str(exc))
-                    time.sleep(1)
-                    print("Exiting...")
-                    time.sleep(4)
-                    break
-                self.logger.error("Runtime error: %s", exc)
-                delay = self.options.idle_interval
             except Exception as exc:
                 self.logger.error("Error updating presence: %s", exc)
                 delay = self.options.active_interval
 
             if delay > 0 and not self.stop_requested():
-                time.sleep(delay)
+                self.options.sleep_provider(delay)
 
+        if self.options.clear_presence_on_game_exit:
+            self.clear_presence("shutdown")
         self.disconnect_rpc()

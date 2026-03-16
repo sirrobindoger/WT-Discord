@@ -15,6 +15,8 @@ from .user_config import read_username, write_username
 
 
 VERSION = "1.0.0"
+WORKER_TASK_NAME = "WarThunderRPCWorker"
+WORKER_ARGUMENT = "--worker"
 
 
 def get_service_status():
@@ -43,6 +45,13 @@ def is_admin():
 
 def run_as_admin():
     ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, " ".join(sys.argv), None, 1)
+
+
+def get_current_user():
+    try:
+        return subprocess.run(["whoami"], check=True, capture_output=True, text=True).stdout.strip()
+    except Exception:
+        return os.environ.get("USERNAME", "")
 
 
 class UsernameDialog:
@@ -212,6 +221,27 @@ class InstallerGUI:
             current_exe = sys.executable if getattr(sys, "frozen", False) else sys.argv[0]
             installed_exe = os.path.join(install_dir, "WarThunderRPC.exe")
             shutil.copy2(current_exe, installed_exe)
+            worker_cmd = f'"{installed_exe}" {WORKER_ARGUMENT}'
+            current_user = get_current_user()
+
+            subprocess.run(
+                [
+                    "schtasks",
+                    "/create",
+                    "/f",
+                    "/tn",
+                    WORKER_TASK_NAME,
+                    "/sc",
+                    "ONLOGON",
+                    "/tr",
+                    worker_cmd,
+                    "/ru",
+                    current_user,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
 
             try:
                 if win32serviceutil.QueryServiceStatus("WarThunderRPC")[1] == win32service.SERVICE_RUNNING:
@@ -264,6 +294,12 @@ class InstallerGUI:
                 text=True,
             )
             subprocess.run(["sc", "start", "WarThunderRPC"], check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["schtasks", "/run", "/tn", WORKER_TASK_NAME],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
             messagebox.showinfo("Success", "Service installed and started successfully!")
         except Exception as exc:
             messagebox.showerror("Installation Error", f"Failed to install service:\n{exc}")
@@ -292,6 +328,11 @@ class InstallerGUI:
                 self.status_label.config(text="Removing service...", fg="orange")
                 self.root.update()
                 subprocess.run(["sc", "delete", "WarThunderRPC"], check=True)
+
+            try:
+                subprocess.run(["schtasks", "/delete", "/f", "/tn", WORKER_TASK_NAME], check=True)
+            except Exception:
+                pass
 
             install_dir = os.path.join(os.getenv("PROGRAMFILES"), "WarThunderRPC")
             if os.path.exists(install_dir):

@@ -1,6 +1,8 @@
 import logging
 import os
 import socket
+import subprocess
+import time
 
 import psutil
 import servicemanager
@@ -8,7 +10,9 @@ import win32event
 import win32service
 import win32serviceutil
 
-from .runtime import RuntimeOptions, WarThunderRPCApp
+
+WORKER_TASK_NAME = "WarThunderRPCWorker"
+WORKER_ARGUMENT = "--worker"
 
 
 def build_service_logger():
@@ -37,7 +41,7 @@ def build_service_logger():
 class WarThunderRPCService(win32serviceutil.ServiceFramework):
     _svc_name_ = "WarThunderRPC"
     _svc_display_name_ = "War Thunder Discord Rich Presence"
-    _svc_description_ = "Provides Discord Rich Presence integration for War Thunder"
+    _svc_description_ = "Supervises the War Thunder Discord Rich Presence worker"
 
     def __init__(self, args):
         if args is not None:
@@ -52,6 +56,8 @@ class WarThunderRPCService(win32serviceutil.ServiceFramework):
         self.logger = build_service_logger()
         self.check_interval = 3
         self.idle_check_interval = 10
+        self.worker_task_name = WORKER_TASK_NAME
+        self._worker_launch_logged = False
         self.logger.info("Service initialized. Running as service: %s", self.is_running_as_service)
 
     def SvcStop(self):
@@ -80,30 +86,54 @@ class WarThunderRPCService(win32serviceutil.ServiceFramework):
         return win32event.WaitForSingleObject(self.stop_event, 1000) == win32event.WAIT_OBJECT_0
 
     @staticmethod
-    def is_aces_running():
-        for process in psutil.process_iter(["name"]):
+    def is_worker_running():
+        for process in psutil.process_iter(["cmdline"]):
             try:
-                if (process.info.get("name") or "").lower() == "aces.exe":
-                    return True
+                cmdline = process.info.get("cmdline") or []
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
+
+            if WORKER_ARGUMENT in cmdline:
+                return True
         return False
 
-    def run_service(self):
-        app = WarThunderRPCApp(
-            RuntimeOptions(
-                mode="service",
-                prompt_for_username=False,
-                check_process_running=self.is_aces_running,
-                logger=self.logger,
-                stop_requested=self.should_stop,
-                active_interval=self.check_interval,
-                idle_interval=self.idle_check_interval,
-            )
-        )
-
+    def launch_worker(self):
         try:
-            app.run_forever()
+            subprocess.run(
+                ["schtasks", "/run", "/tn", self.worker_task_name],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except Exception as exc:
+            if not self._worker_launch_logged:
+                self.logger.error("Worker launch failure: %s", exc)
+                self._worker_launch_logged = True
+            return False
+
+        self._worker_launch_logged = False
+        self.logger.info("Requested worker start via scheduled task")
+        return True
+
+    def supervise_worker(self):
+        if self.is_worker_running():
+            self._worker_launch_logged = False
+            return self.check_interval
+
+        self.launch_worker()
+        return self.idle_check_interval
+
+    def _wait(self, seconds):
+        if seconds <= 0:
+            return
+        if self.is_running_as_service:
+            win32event.WaitForSingleObject(self.stop_event, int(seconds * 1000))
+            return
+        time.sleep(seconds)
+
+    def run_service(self):
+        try:
+            while not self.should_stop():
+                self._wait(self.supervise_worker())
         finally:
-            app.disconnect_rpc()
             self.logger.info("Service stopped")
