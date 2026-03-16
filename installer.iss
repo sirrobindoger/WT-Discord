@@ -29,13 +29,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "dist\WarThunderRPC.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--local"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--local"; Tasks: desktopicon
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--controller"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--controller"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [UninstallRun]
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--disable-controller-autostart"; Flags: runhidden waituntilterminated skipifdoesntexist
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--uninstall-service"; Flags: runhidden waituntilterminated skipifdoesntexist
 
 [Code]
@@ -166,17 +167,23 @@ begin
   if not RunRuntime(ExpandConstant('{app}'), UsernameParam, ResultCode) or (ResultCode <> 0) then
     RaiseException('The installer could not save the War Thunder username for kill tracking.');
 
+  if not RunRuntime(ExpandConstant('{app}'), '--enable-controller-autostart', ResultCode) or (ResultCode <> 0) then
+    RaiseException('The installer could not enable controller auto-start.');
+
   InstallParam :=
     '--install-service --runtime-path ' + QuoteForParam(RuntimeExePath(ExpandConstant('{app}')));
   if not RunRuntime(ExpandConstant('{app}'), InstallParam, ResultCode) or (ResultCode <> 0) then
     RaiseException('The installer could not install or start the Windows service.');
 
+  Exec(RuntimeExePath(ExpandConstant('{app}')), '--controller', ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, ResultCode);
+
   InstallStatusText :=
     'Install location: ' + ExpandConstant('{app}') + #13#10 +
     'Tracked username: ' + Trim(UsernamePage.Values[0]) + #13#10 +
     'Service: installed and started' + #13#10 +
-    'Worker task: created and launched' + #13#10#13#10 +
-    'You can now start War Thunder and Discord normally.';
+    'Worker task: created and launched' + #13#10 +
+    'Controller: launched now and set to start at login' + #13#10#13#10 +
+    'The control center now lives in the system tray. You can start War Thunder and Discord normally.';
 end;
 
 procedure CurPageChanged(CurPageID: Integer);

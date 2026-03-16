@@ -6,7 +6,12 @@ from unittest.mock import patch
 from warthunder_rpc.service_manager import (
     ServiceManagerError,
     _service_query_state,
+    _service_start_type,
+    controller_autostart_enabled,
+    disable_service,
+    enable_service,
     install_runtime_service,
+    set_controller_autostart,
     stop_service,
 )
 
@@ -20,6 +25,14 @@ SERVICE_NAME: WarThunderRPC
                                 (STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)
 """
         self.assertEqual(_service_query_state(output), "RUNNING")
+
+    def test_service_start_type_parses_sc_qc_output(self):
+        output = """
+SERVICE_NAME: WarThunderRPC
+        TYPE               : 10  WIN32_OWN_PROCESS
+        START_TYPE         : 2   AUTO_START
+"""
+        self.assertEqual(_service_start_type(output), "AUTO_START")
 
     def test_stop_service_polls_until_service_stops(self):
         states = iter(["RUNNING", "STOP_PENDING", "STOPPED"])
@@ -39,6 +52,20 @@ SERVICE_NAME: WarThunderRPC
             with patch("warthunder_rpc.service_manager.wait_for_condition", return_value=False):
                 with self.assertRaises(ServiceManagerError):
                     stop_service(runner=lambda *args, **kwargs: None, sleep=lambda _: None)
+
+    def test_disable_service_stops_then_sets_disabled(self):
+        with patch("warthunder_rpc.service_manager.stop_service") as stop_mock:
+            with patch("warthunder_rpc.service_manager.set_service_start_type") as config_mock:
+                disable_service()
+
+        stop_mock.assert_called_once()
+        config_mock.assert_called_once_with("disabled", runner=unittest.mock.ANY)
+
+    def test_enable_service_sets_auto_start(self):
+        with patch("warthunder_rpc.service_manager.set_service_start_type") as config_mock:
+            enable_service()
+
+        config_mock.assert_called_once_with("auto", runner=unittest.mock.ANY)
 
 
 class InstallRuntimeServiceTests(unittest.TestCase):
@@ -69,6 +96,41 @@ class InstallRuntimeServiceTests(unittest.TestCase):
             create_service.assert_called_once()
             start_service.assert_called_once()
             start_worker_task.assert_called_once()
+
+
+class ControllerAutostartTests(unittest.TestCase):
+    def test_controller_autostart_can_be_enabled_and_disabled(self):
+        fake_registry = {}
+
+        class FakeKey:
+            pass
+
+        def create_key(*args, **kwargs):
+            return FakeKey()
+
+        def set_value(_key, name, _reserved, _kind, value):
+            fake_registry[name] = value
+
+        def delete_value(_key, name):
+            if name not in fake_registry:
+                raise FileNotFoundError(name)
+            del fake_registry[name]
+
+        def query_value(_key, name):
+            if name not in fake_registry:
+                raise FileNotFoundError(name)
+            return fake_registry[name], None
+
+        with patch("warthunder_rpc.service_manager.winreg.CreateKey", side_effect=create_key):
+            with patch("warthunder_rpc.service_manager.winreg.SetValueEx", side_effect=set_value):
+                with patch("warthunder_rpc.service_manager.winreg.DeleteValue", side_effect=delete_value):
+                    with patch("warthunder_rpc.service_manager.winreg.OpenKey", side_effect=create_key):
+                        with patch("warthunder_rpc.service_manager.winreg.QueryValueEx", side_effect=query_value):
+                            with patch("warthunder_rpc.service_manager.winreg.CloseKey"):
+                                set_controller_autostart(True, command='"C:\\WarThunderRPC.exe" --controller')
+                                self.assertTrue(controller_autostart_enabled())
+                                set_controller_autostart(False)
+                                self.assertFalse(controller_autostart_enabled())
 
 
 if __name__ == "__main__":
