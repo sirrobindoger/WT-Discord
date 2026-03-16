@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"C:\\\\Users\\\\solom\\\\Documents\\\\WarThunderRPC\" && python -m pytest tests/test_launcher.py tests/test_service_manager.py -v 2>&1)",
+      "Bash(cd \"C:\\\\Users\\\\solom\\\\Documents\\\\WarThunderRPC\" && python -m unittest tests/test_launcher.py tests/test_service_manager.py -v 2>&1 | head -60)"
+    ]
+  }
+}

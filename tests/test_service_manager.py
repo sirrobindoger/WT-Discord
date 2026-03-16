@@ -11,9 +11,13 @@ from warthunder_rpc.service_manager import (
     disable_service,
     enable_service,
     get_service_status,
+    get_worker_processes,
     install_runtime_service,
+    query_task_state,
     set_controller_autostart,
+    stop_background_runtime,
     stop_service,
+    stop_worker_runtime,
 )
 
 
@@ -34,6 +38,22 @@ SERVICE_NAME: WarThunderRPC
         START_TYPE         : 2   AUTO_START
 """
         self.assertEqual(_service_start_type(output), "AUTO_START")
+
+    def test_query_task_state_parses_schtasks_output(self):
+        completed = type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "TaskName: \\WarThunderRPCWorker\nStatus: Running\n",
+                "stderr": "",
+            },
+        )()
+
+        def fake_run(*args, **kwargs):
+            return completed
+
+        self.assertEqual(query_task_state(runner=fake_run), "RUNNING")
 
     def test_stop_service_polls_until_service_stops(self):
         states = iter(["RUNNING", "STOP_PENDING", "STOPPED"])
@@ -58,7 +78,7 @@ SERVICE_NAME: WarThunderRPC
                     stop_service(runner=fake_run, sleep=lambda _: None)
 
     def test_disable_service_stops_then_sets_disabled(self):
-        with patch("warthunder_rpc.service_manager.stop_service") as stop_mock:
+        with patch("warthunder_rpc.service_manager.stop_background_runtime") as stop_mock:
             with patch("warthunder_rpc.service_manager.set_service_start_type") as config_mock:
                 disable_service()
 
@@ -82,6 +102,59 @@ SERVICE_NAME: WarThunderRPC
 
             start_service(runner=fake_run, sleep=lambda _: None)
 
+    def test_stop_worker_runtime_stops_task_then_cleans_worker_processes(self):
+        run_calls = []
+
+        def fake_run(command, **kwargs):
+            run_calls.append(command)
+            return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        with patch("warthunder_rpc.service_manager.query_task_state", side_effect=["RUNNING", "READY"]):
+            with patch("warthunder_rpc.service_manager.terminate_worker_processes", return_value=[]):
+                stop_worker_runtime(runner=fake_run, sleep=lambda _: None)
+
+        self.assertEqual(run_calls, [["schtasks", "/end", "/tn", "WarThunderRPCWorker"]])
+
+    def test_stop_worker_runtime_raises_on_timeout(self):
+        def fake_run(command, **kwargs):
+            return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        with patch("warthunder_rpc.service_manager.query_task_state", return_value="RUNNING"):
+            with patch("warthunder_rpc.service_manager.wait_for_condition", return_value=False):
+                with self.assertRaises(ServiceManagerError):
+                    stop_worker_runtime(runner=fake_run, sleep=lambda _: None)
+
+    def test_stop_background_runtime_stops_service_then_worker(self):
+        with patch("warthunder_rpc.service_manager.stop_service") as stop_service_mock:
+            with patch("warthunder_rpc.service_manager.stop_worker_runtime") as stop_worker_mock:
+                stop_background_runtime()
+
+        stop_service_mock.assert_called_once()
+        stop_worker_mock.assert_called_once()
+
+    def test_get_worker_processes_only_matches_worker_argument(self):
+        class FakeProcess:
+            def __init__(self, pid, cmdline):
+                self.pid = pid
+                self.info = {
+                    "pid": pid,
+                    "name": "WarThunderRPC.exe",
+                    "exe": "C:\\Program Files\\WarThunderRPC\\WarThunderRPC.exe",
+                    "cmdline": cmdline,
+                }
+
+        processes = [
+            FakeProcess(100, ["C:\\Program Files\\WarThunderRPC\\WarThunderRPC.exe", "--worker"]),
+            FakeProcess(101, ["C:\\Program Files\\WarThunderRPC\\WarThunderRPC.exe", "--controller"]),
+            FakeProcess(102, ["C:\\Program Files\\WarThunderRPC\\WarThunderRPC.exe", "--service-action", "stop"]),
+        ]
+
+        with patch("warthunder_rpc.service_manager.os.getpid", return_value=999):
+            with patch("warthunder_rpc.service_manager.psutil.process_iter", return_value=processes):
+                matches = get_worker_processes()
+
+        self.assertEqual([process.pid for process in matches], [100])
+
 
 class InstallRuntimeServiceTests(unittest.TestCase):
     def test_install_runtime_service_requires_admin(self):
@@ -104,6 +177,8 @@ class InstallRuntimeServiceTests(unittest.TestCase):
                             "service_start_type": "AUTO_START",
                             "service_running": True,
                             "task_exists": True,
+                            "worker_task_state": "RUNNING",
+                            "worker_state": "RUNNING",
                         },
                     ):
                         with patch("warthunder_rpc.service_manager.stop_and_delete_service") as stop_delete_service:
@@ -128,13 +203,23 @@ class GetServiceStatusTests(unittest.TestCase):
     def test_get_service_status_tolerates_query_errors(self):
         with patch("warthunder_rpc.service_manager.query_service_state", side_effect=ServiceManagerError("sc error")):
             with patch("warthunder_rpc.service_manager.query_service_start_type", side_effect=ServiceManagerError("sc error")):
-                with patch("warthunder_rpc.service_manager.query_task_exists", side_effect=ServiceManagerError("schtasks error")):
+                with patch("warthunder_rpc.service_manager.query_task_state", side_effect=ServiceManagerError("schtasks error")):
                     status = get_service_status()
 
         self.assertFalse(status["service_running"])
         self.assertFalse(status["service_installed"])
         self.assertFalse(status["task_exists"])
         self.assertEqual(status["service_state"], "NOT_INSTALLED")
+        self.assertEqual(status["worker_state"], "MISSING")
+
+    def test_get_service_status_reports_worker_state(self):
+        with patch("warthunder_rpc.service_manager.query_service_state", return_value="RUNNING"):
+            with patch("warthunder_rpc.service_manager.query_service_start_type", return_value="AUTO_START"):
+                with patch("warthunder_rpc.service_manager.query_task_state", return_value="RUNNING"):
+                    status = get_service_status()
+
+        self.assertEqual(status["worker_task_state"], "RUNNING")
+        self.assertEqual(status["worker_state"], "RUNNING")
 
 
 class ControllerAutostartTests(unittest.TestCase):

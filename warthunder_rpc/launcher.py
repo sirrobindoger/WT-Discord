@@ -18,7 +18,7 @@ from .service_manager import (
     resolve_runtime_path,
     set_controller_autostart,
     start_service,
-    stop_service,
+    stop_background_runtime,
     terminate_runtime_processes,
     uninstall_runtime_service,
 )
@@ -142,7 +142,7 @@ def main(argv=None):
             return
 
         if args.service_action == "stop":
-            stop_service()
+            stop_background_runtime()
             return
 
         if args.service_action == "enable":

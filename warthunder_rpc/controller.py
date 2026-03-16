@@ -5,6 +5,7 @@ import os
 import queue
 import subprocess
 import sys
+import time
 import tkinter as tk
 from tkinter import messagebox
 
@@ -26,6 +27,12 @@ from .user_config import read_username, write_username
 
 ERROR_ALREADY_EXISTS = 183
 TRAY_TOOLTIP = "War Thunder RPC"
+ACTION_LABELS = {
+    "start": "Start Service",
+    "stop": "Stop Background RPC",
+    "enable": "Enable Auto Start",
+    "disable": "Disable Service",
+}
 
 
 def _create_mutex():
@@ -73,13 +80,15 @@ class ControllerApp:
         self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
 
         self.status_value = tk.StringVar(value="Checking service...")
-        self.task_value = tk.StringVar(value="Checking worker task...")
+        self.worker_value = tk.StringVar(value="Checking worker...")
         self.username_value = tk.StringVar(value=read_username() or "")
         self.message_value = tk.StringVar(value="The username is used for kill tracking.")
         self.autostart_value = tk.StringVar(value="Controller autostart: checking...")
 
         self._icon = None
         self._queue = queue.Queue()
+        self._pending_action = None
+        self._pending_action_deadline = None
 
         self._build_layout()
         self._start_tray()
@@ -104,8 +113,8 @@ class ControllerApp:
 
         tk.Label(status_frame, text="Service:").grid(row=0, column=0, sticky="w")
         tk.Label(status_frame, textvariable=self.status_value, anchor="w").grid(row=0, column=1, sticky="w")
-        tk.Label(status_frame, text="Worker task:").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        tk.Label(status_frame, textvariable=self.task_value, anchor="w").grid(row=1, column=1, sticky="w", pady=(6, 0))
+        tk.Label(status_frame, text="Worker:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        tk.Label(status_frame, textvariable=self.worker_value, anchor="w").grid(row=1, column=1, sticky="w", pady=(6, 0))
         tk.Label(status_frame, textvariable=self.autostart_value, anchor="w").grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(6, 0)
         )
@@ -130,7 +139,7 @@ class ControllerApp:
         tk.Button(controls, text="Start Service", width=18, command=lambda: self.run_elevated("--service-action", "start")).grid(
             row=0, column=0, padx=(0, 8), pady=(0, 8), sticky="we"
         )
-        tk.Button(controls, text="Stop Service", width=18, command=lambda: self.run_elevated("--service-action", "stop")).grid(
+        tk.Button(controls, text="Stop Background RPC", width=18, command=lambda: self.run_elevated("--service-action", "stop")).grid(
             row=0, column=1, pady=(0, 8), sticky="we"
         )
         tk.Button(controls, text="Enable Auto Start", width=18, command=lambda: self.run_elevated("--service-action", "enable")).grid(
@@ -151,26 +160,70 @@ class ControllerApp:
         return pystray.Menu(
             pystray.MenuItem("Open Control Center", lambda icon, item: self._queue.put(("show", None))),
             pystray.MenuItem("Start Service", lambda icon, item: self._queue.put(("action", "start"))),
-            pystray.MenuItem("Stop Service", lambda icon, item: self._queue.put(("action", "stop"))),
+            pystray.MenuItem("Stop Background RPC", lambda icon, item: self._queue.put(("action", "stop"))),
             pystray.MenuItem("Enable Auto Start", lambda icon, item: self._queue.put(("action", "enable"))),
             pystray.MenuItem("Disable Service", lambda icon, item: self._queue.put(("action", "disable"))),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Exit Controller", lambda icon, item: self._queue.put(("exit", None))),
         )
 
-    def _update_tray_icon(self, service_state):
+    def _update_tray_icon(self, service_state, worker_state):
         if not self._icon:
             return
 
         color = (85, 170, 85, 255)
-        if service_state in {"STOPPED", "NOT_INSTALLED"}:
+        if service_state in {"STOPPED", "NOT_INSTALLED"} and worker_state != "RUNNING":
             color = (190, 72, 72, 255)
-        elif service_state in {"STOP_PENDING", "START_PENDING"}:
+        elif service_state in {"STOP_PENDING", "START_PENDING"} or worker_state == "STOPPING":
             color = (212, 160, 48, 255)
 
         self._icon.icon = _build_tray_image(color)
-        self._icon.title = f"{TRAY_TOOLTIP} - {service_state.replace('_', ' ').title()}"
+        self._icon.title = (
+            f"{TRAY_TOOLTIP} - {service_state.replace('_', ' ').title()} / Worker {worker_state.replace('_', ' ').title()}"
+        )
         self._icon.update_menu()
+
+    def _action_name(self, arguments):
+        if len(arguments) >= 2 and arguments[0] == "--service-action":
+            return arguments[1]
+        return "service-change"
+
+    def _clear_pending_action(self):
+        self._pending_action = None
+        self._pending_action_deadline = None
+
+    def _pending_action_complete(self, status):
+        if not self._pending_action:
+            return False
+
+        service_state = status["service_state"]
+        worker_state = status.get("worker_state", "MISSING")
+        start_type = status["service_start_type"]
+
+        if self._pending_action == "start":
+            return service_state == "RUNNING"
+        if self._pending_action == "stop":
+            return service_state in {"STOPPED", "NOT_INSTALLED"} and worker_state != "RUNNING"
+        if self._pending_action == "disable":
+            return start_type == "DISABLED" and worker_state != "RUNNING"
+        if self._pending_action == "enable":
+            return start_type not in {"DISABLED", "UNKNOWN"}
+        return True
+
+    def _update_pending_action(self, status):
+        if not self._pending_action:
+            return
+
+        if self._pending_action_complete(status):
+            label = ACTION_LABELS.get(self._pending_action, "Service change")
+            self._clear_pending_action()
+            self.message_value.set(f"{label} complete.")
+            return
+
+        if self._pending_action_deadline and time.monotonic() >= self._pending_action_deadline:
+            label = ACTION_LABELS.get(self._pending_action, "Service change")
+            self._clear_pending_action()
+            self.message_value.set(f"{label} is still settling. You can try again if needed.")
 
     def _poll_status(self):
         self.refresh_status()
@@ -192,23 +245,24 @@ class ControllerApp:
             status = get_service_status()
         except ServiceManagerError as exc:
             self.status_value.set("Unavailable")
-            self.task_value.set("Unavailable")
+            self.worker_value.set("Unavailable")
             self.autostart_value.set("Controller autostart: unavailable")
             self.message_value.set(str(exc))
-            self._update_tray_icon("NOT_INSTALLED")
+            self._update_tray_icon("NOT_INSTALLED", "MISSING")
             return
 
         service_state = status["service_state"]
         start_type = status["service_start_type"]
-        task_exists = status["task_exists"]
+        worker_state = status.get("worker_state", "MISSING")
 
         readable_start_type = start_type.replace("_", " ").title()
         self.status_value.set(f"{service_state.replace('_', ' ').title()} ({readable_start_type})")
-        self.task_value.set("Present" if task_exists else "Missing")
+        self.worker_value.set(worker_state.replace("_", " ").title())
         self.autostart_value.set(
             f"Controller autostart: {'Enabled' if controller_autostart_enabled() else 'Disabled'}"
         )
-        self._update_tray_icon(service_state)
+        self._update_pending_action(status)
+        self._update_tray_icon(service_state, worker_state)
 
     def save_username(self):
         username = self.username_value.get().strip()
@@ -226,13 +280,22 @@ class ControllerApp:
         self.message_value.set(f"Saved username for kill tracking: {saved}")
 
     def run_elevated(self, *arguments):
+        action_name = self._action_name(arguments)
+        if self._pending_action:
+            label = ACTION_LABELS.get(self._pending_action, "A service change")
+            self.message_value.set(f"{label} is already in progress.")
+            return
+
         params = subprocess.list2cmdline(list(arguments))
         result = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
         if result <= 32:
             self.message_value.set("Administrator approval is required to change the service.")
             return
 
-        self.message_value.set("Requested service change. Refreshing status...")
+        self._pending_action = action_name
+        self._pending_action_deadline = time.monotonic() + 15
+        label = ACTION_LABELS.get(action_name, "Service change")
+        self.message_value.set(f"Requested {label.lower()}. Refreshing status...")
         self.root.after(1500, self.refresh_status)
 
     def show_window(self):

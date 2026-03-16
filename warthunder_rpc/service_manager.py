@@ -104,6 +104,32 @@ def _service_start_type(output):
     return None
 
 
+def _task_list_value(output, field_name):
+    prefix = f"{field_name}:"
+    for raw_line in (output or "").splitlines():
+        line = raw_line.strip()
+        if not line.lower().startswith(prefix.lower()):
+            continue
+        return line[len(prefix) :].strip() or None
+    return None
+
+
+def _normalize_task_state(state):
+    if not state:
+        return None
+    return str(state).strip().upper().replace(" ", "_")
+
+
+def _derive_worker_state(*, task_exists, task_state, service_state):
+    if not task_exists:
+        return "MISSING"
+    if service_state == "STOP_PENDING":
+        return "STOPPING"
+    if task_state == "RUNNING":
+        return "RUNNING"
+    return "READY"
+
+
 def query_service_state(service_name=SERVICE_NAME, *, runner: CommandRunner = subprocess.run):
     completed = _run_command(["sc", "query", service_name], check=False, runner=runner)
     if completed.returncode != 0:
@@ -126,18 +152,22 @@ def query_service_start_type(service_name=SERVICE_NAME, *, runner: CommandRunner
 
 
 def query_task_exists(task_name=WORKER_TASK_NAME, *, runner: CommandRunner = subprocess.run):
+    return query_task_state(task_name, runner=runner) is not None
+
+
+def query_task_state(task_name=WORKER_TASK_NAME, *, runner: CommandRunner = subprocess.run):
     completed = _run_command(
-        ["schtasks", "/query", "/tn", task_name],
+        ["schtasks", "/query", "/tn", task_name, "/v", "/fo", "list"],
         check=False,
         runner=runner,
     )
     if completed.returncode == 0:
-        return True
+        return _normalize_task_state(_task_list_value(completed.stdout, "Status")) or "READY"
 
     combined = _command_output(completed)
     if "cannot find the file" in combined or "cannot find the task" in combined:
-        return False
-    raise ServiceManagerError(_format_command_error(["schtasks", "/query", "/tn", task_name], completed))
+        return None
+    raise ServiceManagerError(_format_command_error(["schtasks", "/query", "/tn", task_name, "/v", "/fo", "list"], completed))
 
 
 def get_service_status(*, runner: CommandRunner = subprocess.run):
@@ -152,16 +182,21 @@ def get_service_status(*, runner: CommandRunner = subprocess.run):
         start_type = None
 
     try:
-        task_exists = query_task_exists(runner=runner)
+        task_state = query_task_state(runner=runner)
     except ServiceManagerError:
-        task_exists = False
+        task_state = None
+
+    task_exists = task_state is not None
+    service_state = state or "NOT_INSTALLED"
 
     return {
         "service_installed": state is not None,
-        "service_state": state or "NOT_INSTALLED",
+        "service_state": service_state,
         "service_start_type": start_type or "UNKNOWN",
         "service_running": state == "RUNNING",
         "task_exists": task_exists,
+        "worker_task_state": task_state or "MISSING",
+        "worker_state": _derive_worker_state(task_exists=task_exists, task_state=task_state, service_state=service_state),
     }
 
 
@@ -195,12 +230,105 @@ def stop_service(service_name=SERVICE_NAME, *, runner: CommandRunner = subproces
         raise ServiceManagerError(f"Timed out waiting for service {service_name} to stop")
 
 
+def _iter_runtime_processes(*, include_service=False, required_argument=None):
+    current_pid = os.getpid()
+    for process in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
+        try:
+            exe = process.info.get("exe") or ""
+            name = process.info.get("name") or ""
+            cmdline = process.info.get("cmdline") or []
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+
+        exe_name = os.path.basename(exe).lower() if exe else ""
+        if exe_name != RUNTIME_EXE_NAME.lower() and name.lower() != RUNTIME_EXE_NAME.lower():
+            continue
+
+        if process.pid == current_pid:
+            continue
+
+        if not include_service and "--service" in cmdline:
+            continue
+
+        if required_argument and required_argument not in cmdline:
+            continue
+
+        yield process
+
+
+def get_worker_processes():
+    return list(_iter_runtime_processes(required_argument=WORKER_ARGUMENT))
+
+
+def terminate_worker_processes(*, wait_seconds=10):
+    processes = get_worker_processes()
+    if not processes:
+        return []
+
+    for process in processes:
+        try:
+            process.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    gone, alive = psutil.wait_procs(processes, timeout=wait_seconds)
+    for process in alive:
+        try:
+            process.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    psutil.wait_procs(alive, timeout=3)
+    return [process.pid for process in gone + alive]
+
+
+def stop_worker_runtime(
+    task_name=WORKER_TASK_NAME,
+    *,
+    runner: CommandRunner = subprocess.run,
+    sleep=time.sleep,
+):
+    task_state = query_task_state(task_name, runner=runner)
+    if task_state is None:
+        terminate_worker_processes()
+        return
+
+    if task_state == "RUNNING":
+        completed = _run_command(["schtasks", "/end", "/tn", task_name], check=False, runner=runner)
+        combined = _command_output(completed)
+        if completed.returncode != 0 and "not currently running" not in combined and "cannot find the file" not in combined:
+            raise ServiceManagerError(_format_command_error(["schtasks", "/end", "/tn", task_name], completed))
+
+        stopped = wait_for_condition(
+            lambda: query_task_state(task_name, runner=runner) != "RUNNING",
+            timeout_seconds=30,
+            sleep=sleep,
+        )
+        if not stopped:
+            raise ServiceManagerError(f"Timed out waiting for task {task_name} to stop running")
+
+    terminated_pids = terminate_worker_processes()
+    if terminated_pids:
+        stopped = wait_for_condition(
+            lambda: not get_worker_processes(),
+            timeout_seconds=10,
+            sleep=sleep,
+        )
+        if not stopped:
+            raise ServiceManagerError(f"Timed out waiting for worker processes to exit: {', '.join(str(pid) for pid in terminated_pids)}")
+
+
+def stop_background_runtime(*, runner: CommandRunner = subprocess.run, sleep=time.sleep):
+    stop_service(runner=runner, sleep=sleep)
+    stop_worker_runtime(runner=runner, sleep=sleep)
+
+
 def set_service_start_type(start_type, service_name=SERVICE_NAME, *, runner: CommandRunner = subprocess.run):
     _run_command(["sc", "config", service_name, "start=", start_type], runner=runner)
 
 
 def disable_service(*, runner: CommandRunner = subprocess.run, sleep=time.sleep):
-    stop_service(runner=runner, sleep=sleep)
+    stop_background_runtime(runner=runner, sleep=sleep)
     set_service_start_type("disabled", runner=runner)
 
 
@@ -330,28 +458,7 @@ def start_service(service_name=SERVICE_NAME, *, runner: CommandRunner = subproce
 
 
 def get_runtime_processes():
-    current_pid = os.getpid()
-    matches = []
-    for process in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
-        try:
-            exe = process.info.get("exe") or ""
-            name = process.info.get("name") or ""
-            cmdline = process.info.get("cmdline") or []
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
-
-        exe_name = os.path.basename(exe).lower() if exe else ""
-        if exe_name != RUNTIME_EXE_NAME.lower() and name.lower() != RUNTIME_EXE_NAME.lower():
-            continue
-
-        if process.pid == current_pid:
-            continue
-
-        if "--service" in cmdline:
-            continue
-
-        matches.append(process)
-    return matches
+    return list(_iter_runtime_processes())
 
 
 def terminate_runtime_processes(*, wait_seconds=10):
@@ -535,19 +642,24 @@ __all__ = [
     "get_controller_autostart_command",
     "get_runtime_processes",
     "get_service_status",
+    "get_worker_processes",
     "install_runtime_service",
     "is_admin",
     "query_service_state",
     "query_service_start_type",
     "query_task_exists",
+    "query_task_state",
     "resolve_runtime_path",
     "set_controller_autostart",
     "set_service_start_type",
     "start_service",
     "start_worker_task",
+    "stop_background_runtime",
     "stop_and_delete_service",
     "stop_service",
+    "stop_worker_runtime",
     "terminate_runtime_processes",
+    "terminate_worker_processes",
     "uninstall_runtime_service",
     "wait_for_condition",
 ]
